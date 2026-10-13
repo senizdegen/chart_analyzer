@@ -4,7 +4,8 @@ They follow the same contracts as the real adapters (see ``application/ports``),
 use cases are tested without Postgres, RabbitMQ, Redis, Finnhub or OpenAI.
 """
 
-from collections.abc import Sequence
+import asyncio
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from types import TracebackType
@@ -22,6 +23,7 @@ from chart_analyzer.application.ports.services import (
     ChartImage,
     ProgressEvent,
     ProgressEventType,
+    StoredProgressEvent,
 )
 from chart_analyzer.domain.analysis import Analysis, NewAnalysis, StoredImage
 from chart_analyzer.domain.analysis_rules import build_analyst_review
@@ -469,3 +471,26 @@ class RecordingTaskPublisher:
         if self._fail_after is not None and len(self.published) >= self._fail_after:
             raise ConnectionError("broker is down")
         self.published.append(analysis_id)
+
+
+class InMemoryProgressStream:
+    """Publisher and reader in one, like the Redis Stream adapter."""
+
+    def __init__(self) -> None:
+        self.events: dict[UUID, list[ProgressEvent]] = {}
+
+    async def publish(self, analysis_id: UUID, event: ProgressEvent) -> None:
+        self.events.setdefault(analysis_id, []).append(event)
+
+    async def read(
+        self, analysis_id: UUID, *, after: str | None = None
+    ) -> AsyncIterator[StoredProgressEvent | None]:
+        position = int(after) if after and after.isdigit() else 0
+        while True:
+            stored = self.events.get(analysis_id, [])
+            if position < len(stored):
+                position += 1
+                yield StoredProgressEvent(id=str(position), event=stored[position - 1])
+            else:
+                await asyncio.sleep(0)
+                yield None

@@ -26,11 +26,10 @@ from chart_analyzer.application.ports.services import (
     ImageStorage,
     MarketDataProvider,
     ProgressEvent,
-    ProgressEventType,
     ProgressPublisher,
 )
 from chart_analyzer.application.ports.unit_of_work import UnitOfWorkFactory
-from chart_analyzer.application.views import error_view, to_view
+from chart_analyzer.application.progress_events import final_event, stage_event
 from chart_analyzer.domain.analysis import Analysis
 from chart_analyzer.domain.analysis_rules import assemble_result, resolve_recognized_asset
 from chart_analyzer.domain.enums import ErrorCode, Stage
@@ -157,10 +156,7 @@ class ProcessAnalysis:
             log.warning("analysis.completion_skipped", reason="no longer in progress")
             return
         log.info("analysis.completed", symbol=symbol, tokens_used=finished.tokens_used)
-        await self._publish(
-            analysis.id,
-            ProgressEvent(ProgressEventType.COMPLETED, to_view(finished).model_dump(mode="json")),
-        )
+        await self._publish(analysis.id, final_event(finished))
 
     async def _recognize(self, analysis_id: UUID, image: ChartImage) -> ChartRecognition:
         answer = await self._ai.recognize(image)
@@ -185,29 +181,15 @@ class ProcessAnalysis:
         async with self._uow_factory() as uow:
             await uow.analyses.set_stage(analysis_id, stage)
             await uow.commit()
-        await self._publish(
-            analysis_id, ProgressEvent(ProgressEventType.STAGE, {"stage": stage.value})
-        )
+        await self._publish(analysis_id, stage_event(stage))
 
     async def _fail(self, analysis: Analysis, code: ErrorCode) -> None:
         async with self._uow_factory() as uow:
             failed = await uow.analyses.fail(analysis.id, code, now=self._clock.now())
+            current = await uow.analyses.get(analysis.id)
             await uow.commit()
-        if not failed:
-            return
-        error = error_view(code, analysis.language)
-        assert error is not None
-        await self._publish(
-            analysis.id,
-            ProgressEvent(
-                ProgressEventType.FAILED,
-                {
-                    "id": str(analysis.id),
-                    "status": "failed",
-                    "error": error.model_dump(mode="json"),
-                },
-            ),
-        )
+        if failed and current is not None:
+            await self._publish(analysis.id, final_event(current))
 
     async def _release(self, analysis_id: UUID) -> None:
         async with self._uow_factory() as uow:

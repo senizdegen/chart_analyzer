@@ -8,7 +8,9 @@ x-app-env: &app-env
   UPLOAD_DIR: /data/uploads
 
 x-app: &app
-  build: .
+  build:
+    context: .
+    target: runtime
   env_file:
     - path: .env
       required: false
@@ -49,6 +51,9 @@ services:
   # One-off: `docker compose run --rm tests`
   tests:
     <<: *app
+    build:
+      context: .
+      target: test
     profiles: ["test"]
     command: pytest
     environment:

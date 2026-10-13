@@ -24,11 +24,11 @@ class Settings(BaseSettings):
     # --- AI (any OpenAI-compatible endpoint, e.g. a LiteLLM proxy) ----------------------------
     openai_api_key: SecretStr = SecretStr("")
     openai_base_url: str = "https://api.openai.com/v1"
-    openai_recognition_model: str = "gpt-4o-mini"
-    openai_analysis_model: str = "gpt-4o"
+    openai_recognition_model: str = "gpt-5-mini"
+    openai_analysis_model: str = "gpt-5-mini"
     openai_timeout_seconds: float = 60.0
-    openai_recognition_max_tokens: int = 300
-    openai_analysis_max_tokens: int = 2500
+    openai_recognition_max_tokens: int = 1000
+    openai_analysis_max_tokens: int = 6000
 
     # --- market data --------------------------------------------------------------------------
     finnhub_api_key: SecretStr = SecretStr("")

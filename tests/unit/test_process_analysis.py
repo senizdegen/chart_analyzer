@@ -128,6 +128,9 @@ class TestPermanentFailures:
         assert h.ai.analyze_calls == 0 and h.market.calls == 0
         final = h.progress.events[-1][1]
         assert final.type is ProgressEventType.FAILED
+        assert final.data["id"] == str(analysis_id)
+        assert final.data["status"] == "failed"
+        assert final.data["result"] is None
         assert final.data["error"] == {
             "code": "unclear_chart",
             "message": "Sube un gráfico de trading claro.",
