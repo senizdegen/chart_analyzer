@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="ru" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body style="margin:0">
+<title>Chart Analyzer Architecture</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one wide diagram as the page's subject, numbered walkthrough and failure table beneath it */
+:root {
+  --bg: #f6f5fa;
+  --surface: #ffffff;
+  --fg: #1c1a2b;
+  --muted: #666380;
+  --line: #c9c6da;
+  --accent: #4f3fd6;
+  --accent-soft: #ebe8fc;
+  --on-accent: #ffffff;
+  --warn: #b4441f;
+  --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14131c; --surface: #1e1c2a; --fg: #eceaf6; --muted: #a09dba; --line: #3d3a52;
+    --accent: #9d92ff; --accent-soft: #2a2647; --on-accent: #14131c; --warn: #ff9a70;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #14131c; --surface: #1e1c2a; --fg: #eceaf6; --muted: #a09dba; --line: #3d3a52;
+  --accent: #9d92ff; --accent-soft: #2a2647; --on-accent: #14131c; --warn: #ff9a70;
+  color-scheme: dark;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 15px; line-height: 1.55; }
+.page { max-width: 1180px; margin: 0 auto; padding-inline: 20px; padding-block: 36px 56px; display: flex; flex-direction: column; gap: 28px; }
+header { display: flex; flex-direction: column; gap: 6px; }
+h1 { font-size: 28px; font-weight: 600; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+.lede { margin: 0; color: var(--muted); max-width: 68ch; }
+h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 10px; }
+figure { margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
+.scroll svg { display: block; width: 100%; min-width: 1040px; height: auto; font-family: var(--sans); }
+figcaption { color: var(--muted); font-size: 13.5px; max-width: 80ch; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 28px 40px; }
+.cols > * { min-width: 0; }
+ol.steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; counter-reset: s; }
+ol.steps li { display: grid; grid-template-columns: 24px 1fr; gap: 10px; align-items: start; counter-increment: s; }
+ol.steps li::before { content: counter(s); width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: var(--on-accent); font-size: 12px; font-weight: 600; display: grid; place-items: center; margin-top: 1px; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 8px 10px 8px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 500; color: var(--muted); font-size: 12.5px; }
+code { font-family: var(--mono); font-size: 0.92em; }
+
+/* diagram marks */
+.box { fill: var(--surface); stroke: var(--fg); stroke-width: 1.5; }
+.store { fill: var(--bg); stroke: var(--fg); stroke-width: 1.5; }
+.ext { fill: var(--surface); stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.chip { fill: var(--accent-soft); stroke: none; }
+.t { fill: var(--fg); font-size: 14px; font-weight: 600; }
+.s { fill: var(--muted); font-size: 11px; }
+.m { fill: var(--fg); font-size: 12px; font-family: var(--mono); }
+.l { fill: var(--fg); font-size: 11px; }
+.lw { fill: var(--warn); font-size: 11px; }
+.ln { stroke: var(--fg); stroke-width: 1.5; fill: none; }
+.lnw { stroke: var(--warn); stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; }
+.ah { fill: var(--fg); }
+.ahw { fill: var(--warn); }
+.bd { fill: var(--accent); }
+.bt { fill: var(--on-accent); font-size: 11px; font-weight: 600; }
+</style>
+
+<div class="page">
+  <header>
+    <h1>Chart Analyzer: архитектура</h1>
+    <p class="lede">Пять контейнеров. API только принимает запрос и отдаёт прогресс; сам анализ выполняет воркер, а задача попадает к нему через outbox и RabbitMQ.</p>
+  </header>
+
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 40 1340 635" role="img" aria-label="Клиент отправляет график в API. API одной транзакцией пишет анализ и строку outbox в Postgres и сохраняет файл на диск. Воркер читает outbox, публикует задачу в RabbitMQ, берёт её, обращается к OpenAI и Finnhub, сохраняет шаги в Postgres и пишет стадии в Redis, откуда API отдаёт их клиенту потоком.">
+        <defs>
+          <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+          <marker id="aw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ahw" d="M0 0L10 5L0 10z"/></marker>
+        </defs>
+
+        <!-- client -->
+        <rect class="box" x="20" y="270" width="130" height="170" rx="4"/>
+        <text class="t" x="85" y="350" text-anchor="middle">Клиент</text>
+        <text class="s" x="85" y="368" text-anchor="middle">приложение</text>
+
+        <!-- API -->
+        <rect class="box" x="270" y="60" width="150" height="590" rx="4"/>
+        <text class="t" x="345" y="88" text-anchor="middle">API</text>
+        <text class="s" x="345" y="106" text-anchor="middle">FastAPI, async</text>
+        <text class="s" x="345" y="240" text-anchor="middle">файл: формат, размер</text>
+        <text class="s" x="345" y="258" text-anchor="middle">идемпотентность</text>
+        <text class="s" x="345" y="276" text-anchor="middle">квота и резерв</text>
+        <text class="s" x="345" y="560" text-anchor="middle">история, результат</text>
+
+        <!-- Postgres -->
+        <rect class="store" x="540" y="60" width="240" height="140" rx="4"/>
+        <text class="t" x="556" y="84">Postgres</text>
+        <text class="s" x="764" y="84" text-anchor="end">источник правды</text>
+        <rect class="chip" x="556" y="96" width="208" height="38" rx="3"/>
+        <text class="m" x="566" y="119">analyses</text>
+        <text class="s" x="754" y="119" text-anchor="end">шаги, токены</text>
+        <rect class="chip" x="556" y="146" width="208" height="38" rx="3"/>
+        <text class="m" x="566" y="169">outbox</text>
+        <text class="s" x="754" y="169" text-anchor="end">к отправке</text>
+
+        <!-- RabbitMQ -->
+        <rect class="store" x="540" y="230" width="240" height="180" rx="4"/>
+        <text class="t" x="556" y="254">RabbitMQ</text>
+        <text class="s" x="764" y="254" text-anchor="end">очереди</text>
+        <rect class="chip" x="556" y="266" width="208" height="38" rx="3"/>
+        <text class="m" x="566" y="289">tasks</text>
+        <text class="s" x="754" y="289" text-anchor="end">id анализа</text>
+        <rect class="chip" x="556" y="314" width="208" height="38" rx="3"/>
+        <text class="m" x="566" y="337">retry</text>
+        <text class="s" x="754" y="337" text-anchor="end">пауза, потом в tasks</text>
+        <rect class="chip" x="556" y="362" width="208" height="38" rx="3"/>
+        <text class="m" x="566" y="385">DLQ</text>
+        <text class="s" x="754" y="385" text-anchor="end">на разбор</text>
+
+        <!-- Redis -->
+        <rect class="store" x="540" y="440" width="240" height="130" rx="4"/>
+        <text class="t" x="556" y="464">Redis</text>
+        <rect class="chip" x="556" y="476" width="208" height="34" rx="3"/>
+        <text class="m" x="566" y="497">events</text>
+        <text class="s" x="754" y="497" text-anchor="end">стадии прогресса</text>
+        <rect class="chip" x="556" y="520" width="208" height="34" rx="3"/>
+        <text class="m" x="566" y="541">cache</text>
+        <text class="s" x="754" y="541" text-anchor="end">данные Finnhub</text>
+
+        <!-- Disk -->
+        <rect class="store" x="540" y="600" width="240" height="50" rx="4"/>
+        <text class="t" x="556" y="630">Диск</text>
+        <text class="s" x="764" y="630" text-anchor="end">картинки графиков</text>
+
+        <!-- Worker -->
+        <rect class="box" x="900" y="60" width="160" height="590" rx="4"/>
+        <text class="t" x="980" y="88" text-anchor="middle">Воркер</text>
+        <text class="s" x="980" y="106" text-anchor="middle">отдельный процесс</text>
+        <text class="s" x="980" y="169" text-anchor="middle">публикатор outbox</text>
+        <text class="s" x="980" y="400" text-anchor="middle">это график? тикер?</text>
+        <text class="s" x="980" y="418" text-anchor="middle">контрольные точки</text>
+        <text class="s" x="980" y="436" text-anchor="middle">проверка ответа AI</text>
+
+        <!-- externals -->
+        <text class="s" x="1250" y="236" text-anchor="middle">внешние сервисы</text>
+        <rect class="ext" x="1180" y="250" width="140" height="60" rx="4"/>
+        <text class="t" x="1250" y="285" text-anchor="middle">OpenAI</text>
+        <rect class="ext" x="1180" y="507" width="140" height="60" rx="4"/>
+        <text class="t" x="1250" y="542" text-anchor="middle">Finnhub</text>
+
+        <!-- client <-> API -->
+        <line class="ln" x1="150" y1="300" x2="270" y2="300" marker-end="url(#a)"/>
+        <text class="l" x="216" y="294" text-anchor="middle">POST график</text>
+        <line class="ln" x1="270" y1="350" x2="150" y2="350" marker-end="url(#a)"/>
+        <text class="l" x="210" y="344" text-anchor="middle">202 + id</text>
+        <line class="ln" x1="270" y1="400" x2="150" y2="400" marker-end="url(#a)"/>
+        <text class="l" x="210" y="394" text-anchor="middle">SSE: стадии, итог</text>
+
+        <!-- API <-> stores -->
+        <line class="ln" x1="420" y1="115" x2="540" y2="115" marker-end="url(#a)"/>
+        <text class="l" x="486" y="109" text-anchor="middle">анализ + outbox</text>
+        <line class="ln" x1="540" y1="493" x2="420" y2="493" marker-end="url(#a)"/>
+        <text class="l" x="480" y="487" text-anchor="middle">читает события</text>
+        <line class="ln" x1="420" y1="625" x2="540" y2="625" marker-end="url(#a)"/>
+        <text class="l" x="480" y="619" text-anchor="middle">сохраняет файл</text>
+
+        <!-- stores <-> worker -->
+        <line class="ln" x1="900" y1="115" x2="780" y2="115" marker-end="url(#a)"/>
+        <text class="l" x="840" y="109" text-anchor="middle">шаги, результат</text>
+        <line class="ln" x1="780" y1="165" x2="900" y2="165" marker-end="url(#a)"/>
+        <text class="l" x="846" y="159" text-anchor="middle">читает outbox</text>
+
+        <line class="ln" x1="900" y1="276" x2="780" y2="276" marker-end="url(#a)"/>
+        <text class="l" x="840" y="270" text-anchor="middle">публикует id</text>
+        <line class="ln" x1="780" y1="296" x2="900" y2="296" marker-end="url(#a)"/>
+        <text class="l" x="848" y="310" text-anchor="middle">берёт задачу</text>
+        <line class="lnw" x1="900" y1="333" x2="780" y2="333" marker-end="url(#aw)"/>
+        <text class="lw" x="840" y="328" text-anchor="middle">сбой: повтор</text>
+        <line class="lnw" x1="900" y1="381" x2="780" y2="381" marker-end="url(#aw)"/>
+        <text class="lw" x="840" y="375" text-anchor="middle">попытки кончились</text>
+
+        <line class="ln" x1="900" y1="493" x2="780" y2="493" marker-end="url(#a)"/>
+        <text class="l" x="834" y="487" text-anchor="middle">пишет стадии</text>
+        <line class="ln" x1="900" y1="537" x2="780" y2="537" marker-end="url(#a)" marker-start="url(#a)"/>
+        <text class="l" x="840" y="531" text-anchor="middle">кэш данных</text>
+        <line class="ln" x1="780" y1="625" x2="900" y2="625" marker-end="url(#a)"/>
+        <text class="l" x="840" y="619" text-anchor="middle">читает файл</text>
+
+        <!-- worker -> externals -->
+        <line class="ln" x1="1060" y1="280" x2="1180" y2="280" marker-end="url(#a)"/>
+        <text class="l" x="1128" y="274" text-anchor="middle">2 запроса</text>
+        <line class="ln" x1="1060" y1="537" x2="1180" y2="537" marker-end="url(#a)"/>
+        <text class="l" x="1128" y="531" text-anchor="middle">данные тикера</text>
+
+        <!-- step badges -->
+        <circle class="bd" cx="164" cy="300" r="9"/><text class="bt" x="164" y="304" text-anchor="middle">1</text>
+        <circle class="bd" cx="434" cy="115" r="9"/><text class="bt" x="434" y="119" text-anchor="middle">2</text>
+        <circle class="bd" cx="794" cy="165" r="9"/><text class="bt" x="794" y="169" text-anchor="middle">3</text>
+        <circle class="bd" cx="794" cy="296" r="9"/><text class="bt" x="794" y="300" text-anchor="middle">4</text>
+        <circle class="bd" cx="1074" cy="280" r="9"/><text class="bt" x="1074" y="284" text-anchor="middle">5</text>
+        <circle class="bd" cx="1074" cy="537" r="9"/><text class="bt" x="1074" y="541" text-anchor="middle">5</text>
+        <circle class="bd" cx="886" cy="493" r="9"/><text class="bt" x="886" y="497" text-anchor="middle">6</text>
+
+        <!-- legend -->
+        <circle class="bd" cx="32" cy="606" r="9"/><text class="bt" x="32" y="610" text-anchor="middle">n</text>
+        <text class="s" x="50" y="610">порядок шагов</text>
+        <line class="lnw" x1="22" y1="636" x2="44" y2="636"/>
+        <text class="s" x="50" y="640">путь при сбое</text>
+      </svg>
+    </div>
+    <figcaption>Между API и RabbitMQ нет стрелки: API пишет только в Postgres, а в очередь задачу переносит публикатор outbox. Поэтому сохранённый анализ не может потеряться по дороге в очередь.</figcaption>
+  </figure>
+
+  <div class="cols">
+    <section>
+      <h2>Путь одного анализа</h2>
+      <ol class="steps">
+        <li><span>Клиент отправляет <code>POST /analyses</code>: картинка, язык, <code>x-user-id</code>, <code>Idempotency-Key</code>. API проверяет файл (настоящая картинка, формат, размер), ключ идемпотентности и квоту с резервом.</span></li>
+        <li><span>Одной транзакцией в Postgres создаются анализ и строка outbox; файл уходит на диск. Клиент сразу получает 202 и id.</span></li>
+        <li><span>Публикатор outbox читает неотправленные строки и публикует id анализа в очередь <code>tasks</code>.</span></li>
+        <li><span>Воркер берёт задачу и атомарно переводит анализ в статус «в работе». Дубль сообщения пропускается.</span></li>
+        <li><span>Распознавание в OpenAI: это график и виден ли тикер; если нет, клиент получает ошибку «Please upload a clear trading chart». Затем данные тикера из Finnhub через кэш, полный анализ в OpenAI. Результат каждого шага сразу сохраняется в Postgres.</span></li>
+        <li><span>После каждого шага воркер пишет стадию в Redis. API отдаёт стадии и итог клиенту потоком; при обрыве клиент переподключается и получает их заново.</span></li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Что происходит при сбоях</h2>
+      <table>
+        <thead><tr><th>Сбой</th><th>Реакция системы</th></tr></thead>
+        <tbody>
+          <tr><td>Оборвалась сеть клиента</td><td>Воркер продолжает; клиент переподключается к потоку или забирает результат по GET</td></tr>
+          <tr><td>Клиент повторил POST</td><td>По ключу идемпотентности возвращается тот же анализ</td></tr>
+          <tr><td>Упал API после записи в базу</td><td>Строка outbox осталась, задача всё равно будет опубликована</td></tr>
+          <tr><td>Упал воркер посреди анализа</td><td>Сообщение вернётся в очередь; новый воркер продолжит с сохранённого шага</td></tr>
+          <tr><td>Временный сбой OpenAI или Finnhub</td><td>Очередь <code>retry</code>: пауза растёт с каждой попыткой</td></tr>
+          <tr><td>Попытки кончились</td><td>Сообщение в <code>DLQ</code>, анализ неуспешен и в квоту не идёт</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </div>
+</div>
+
+</body>
+</html>
