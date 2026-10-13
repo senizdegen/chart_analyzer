@@ -29,6 +29,12 @@ and use the separate database `chart_analyzer_test` and Redis db `1`.
 - A new external dependency gets a port first, then an adapter, then a fake in `tests/fakes.py`.
 - State changes of an analysis are single atomic statements in `AnalysisRepository`
   (`claim`, `complete`, `fail`, …). Do not read-modify-write an analysis.
+- A worker finishes, fails or releases an analysis only with the claim number it got from
+  `claim` (`attempt=analysis.attempts`): that is the fencing against a second worker.
+- `ANALYSIS_DEADLINE_SECONDS` must stay below `ANALYSIS_LEASE_SECONDS`, and
+  `ANALYSIS_STALE_AFTER_SECONDS` above the whole retry schedule.
+- Only the successful AI calls are added to `tokens_used`; that is what keeps an analysis
+  within `QUOTA_RESERVATION_TOKENS`.
 - The quota check and the insert of an analysis must stay inside one transaction that
   starts with `uow.lock_user(user_id)`.
 - Enum values (`domain/enums.py`) are part of the API contract. Do not rename them.
@@ -49,5 +55,7 @@ and use the separate database `chart_analyzer_test` and Redis db `1`.
 - Finnhub free key works: quote (stocks and `BINANCE:<BASE>USDT`), profile2, recommendation,
   company-news, news?category=crypto. `/stock/price-target` is premium (403).
   Unknown symbols return HTTP 200 with price 0, not an error.
-- The provided LiteLLM key (`https://litellm.zimran.net/v1`) only allows image-generation
-  models, so the AI adapter has not been exercised against a real vision model yet.
+- The LiteLLM key (`https://litellm.zimran.net/v1`) allows `gpt-5-mini` (chat, images,
+  strict structured outputs). The AI adapter and the whole flow were run against it:
+  recognition about 1,700 tokens and 2-3 s, analysis about 5,500 tokens and 10-17 s.
+  `gpt-5-mini` is a reasoning model: `max_completion_tokens` must leave room for reasoning.

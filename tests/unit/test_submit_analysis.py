@@ -1,7 +1,8 @@
 """Admission of a new analysis: quota, idempotency, outbox."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -15,6 +16,7 @@ from tests.fakes import (
     FixedClock,
     InMemoryDatabase,
     InMemoryImageStorage,
+    InMemoryOutboxRepository,
     InMemoryUnitOfWork,
     make_analysis,
 )
@@ -27,12 +29,52 @@ class RejectingInspector:
         raise InvalidImage(ErrorCode.INVALID_IMAGE)
 
 
+class FailingCommit(InMemoryUnitOfWork):
+    """The connection drops during COMMIT: nobody knows whether it went through."""
+
+    async def commit(self) -> None:
+        raise ConnectionError("connection lost during commit")
+
+
+class BrokenOutbox(InMemoryOutboxRepository):
+    async def add(self, analysis_id: UUID, *, now: datetime) -> None:
+        raise ConnectionError("database is down")
+
+
+class FailingOutbox(InMemoryUnitOfWork):
+    """The transaction breaks before the commit is attempted."""
+
+    def __init__(self, db: InMemoryDatabase) -> None:
+        super().__init__(db)
+        self.outbox = BrokenOutbox(db)
+
+
+class RivalSpendsTheQuota(InMemoryUnitOfWork):
+    """While this request waited for the user lock, another one finished and spent it all."""
+
+    async def lock_user(self, user_id: str) -> None:
+        await super().lock_user(user_id)
+        self._db.seed(
+            make_analysis(
+                uuid4(),
+                user_id=user_id,
+                status=AnalysisStatus.COMPLETED,
+                tokens_used=500_000,
+                completed_at=NOW,
+            )
+        )
+
+
 class Harness:
-    def __init__(self, inspector: object | None = None) -> None:
+    def __init__(
+        self,
+        inspector: object | None = None,
+        uow: Callable[[InMemoryDatabase], InMemoryUnitOfWork] = InMemoryUnitOfWork,
+    ) -> None:
         self.db = InMemoryDatabase()
         self.storage = InMemoryImageStorage()
         self.submit = SubmitAnalysis(
-            lambda: InMemoryUnitOfWork(self.db),
+            lambda: uow(self.db),
             self.storage,
             inspector or FakeInspector(),  # type: ignore[arg-type]
             POLICY,
@@ -131,8 +173,20 @@ class TestQuota:
         with pytest.raises(QuotaExceeded) as error:
             await h.submit.execute(h.command())
 
-        assert error.value.code is ErrorCode.QUOTA_EXCEEDED
+        # 480k spent-or-reserved would still fit one analysis: only the running ones block
+        assert error.value.code is ErrorCode.TOO_MANY_ACTIVE_ANALYSES
         assert len(h.db.outbox) == 2
+
+    async def test_spent_quota_is_reported_as_the_daily_limit_even_with_running_analyses(
+        self, h: Harness
+    ) -> None:
+        await h.submit.execute(h.command())
+        h.completed(480_001)
+
+        with pytest.raises(QuotaExceeded) as error:
+            await h.submit.execute(h.command())
+
+        assert error.value.code is ErrorCode.QUOTA_EXCEEDED
 
     async def test_caps_concurrent_analyses_per_user(self, h: Harness) -> None:
         for _ in range(3):
@@ -142,6 +196,39 @@ class TestQuota:
             await h.submit.execute(h.command())
 
         assert error.value.code is ErrorCode.TOO_MANY_ACTIVE_ANALYSES
+
+
+class TestStoredImage:
+    """The image is written before the transaction, so a failed admission must clean up."""
+
+    async def test_image_is_deleted_when_the_check_under_the_lock_rejects(self) -> None:
+        h = Harness(uow=RivalSpendsTheQuota)
+
+        with pytest.raises(QuotaExceeded) as error:
+            await h.submit.execute(h.command())
+
+        assert error.value.code is ErrorCode.QUOTA_EXCEEDED
+        assert h.db.locked_users == ["user-1"]  # the early check passed; this one is the second
+        assert not h.storage.files
+        assert not h.db.outbox
+
+    async def test_image_is_deleted_when_the_transaction_fails_before_the_commit(self) -> None:
+        h = Harness(uow=FailingOutbox)
+
+        with pytest.raises(ConnectionError):
+            await h.submit.execute(h.command())
+
+        assert not h.storage.files
+
+    async def test_image_is_kept_when_the_commit_itself_fails(self) -> None:
+        h = Harness(uow=FailingCommit)
+
+        with pytest.raises(ConnectionError):
+            await h.submit.execute(h.command())
+
+        # The analysis may have been committed after all, and then it needs its image.
+        (analysis,) = (row.analysis for row in h.db.rows.values())
+        assert list(h.storage.files) == [analysis.image.key]
 
 
 class TestIdempotency:

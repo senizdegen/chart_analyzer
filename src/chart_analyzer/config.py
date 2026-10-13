@@ -2,8 +2,9 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Self
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -48,12 +49,18 @@ class Settings(BaseSettings):
 
     # --- quota --------------------------------------------------------------------------------
     quota_daily_tokens: int = 500_000
-    quota_reservation_tokens: int = 20_000  # upper bound of what one analysis can spend
+    # Upper bound of what one analysis is charged: one recognition call plus the one
+    # analysis call that succeeds. Inputs are bounded (image side, news count and summary
+    # length) and outputs by the max-token settings above; a real analysis uses about 7,000.
+    quota_reservation_tokens: int = 20_000
     quota_max_active_analyses: int = 3
 
     # --- worker -------------------------------------------------------------------------------
     worker_prefetch: int = 8
     analysis_lease_seconds: int = 180
+    analysis_deadline_seconds: int = 150  # hard stop of one attempt; must stay below the lease
+    analysis_stale_after_seconds: int = 1800  # active but untouched this long -> failed
+    stale_sweep_interval_seconds: float = 60.0
     retry_delays_seconds: tuple[int, ...] = Field(default=(5, 30, 120))
     retry_busy_delay_seconds: int = 30
     outbox_poll_interval_seconds: float = 0.5
@@ -62,6 +69,21 @@ class Settings(BaseSettings):
     # --- progress events ----------------------------------------------------------------------
     progress_ttl_seconds: int = 3600
     sse_keepalive_seconds: float = 15.0
+
+    @model_validator(mode="after")
+    def _check_worker_timings(self) -> Self:
+        """Catch timings that would let two workers hold one analysis, at startup."""
+        if self.analysis_deadline_seconds >= self.analysis_lease_seconds:
+            raise ValueError("ANALYSIS_DEADLINE_SECONDS must be below ANALYSIS_LEASE_SECONDS")
+        retry_schedule = sum(self.retry_delays_seconds) + self.analysis_lease_seconds * (
+            len(self.retry_delays_seconds) + 1
+        )
+        if self.analysis_stale_after_seconds <= retry_schedule:
+            raise ValueError(
+                "ANALYSIS_STALE_AFTER_SECONDS must exceed the whole retry schedule "
+                f"({retry_schedule} s with the current delays and lease)"
+            )
+        return self
 
 
 @lru_cache

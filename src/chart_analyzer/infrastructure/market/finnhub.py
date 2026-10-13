@@ -97,7 +97,7 @@ class FinnhubMarketData:
     async def get_price(self, ref: AssetRef) -> CurrentPrice:
         path = "/quote"
         quote = _parse(_Quote, await self._get(path, {"symbol": _quote_symbol(ref)}), path)
-        if not quote.c:
+        if quote.c is None or quote.c <= 0:
             raise AnalysisFailure(ErrorCode.ASSET_NOT_FOUND, f"no quote for {ref.symbol}")
         return CurrentPrice(
             price=quote.c,

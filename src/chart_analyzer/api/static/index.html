@@ -1,0 +1,1265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chart Analyzer demo</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f6f2;
+    --surface: #ffffff;
+    --surface-2: #f3f1f8;
+    --text: #1d1b26;
+    --muted: #686580;
+    --border: #e4e1ec;
+    --accent: #5b45e0;
+    --accent-text: #5b45e0;
+    --accent-soft: #eeebfd;
+    --on-accent: #ffffff;
+    --up: #0f7a52;
+    --up-soft: #e1f4ea;
+    --down: #c22f40;
+    --down-soft: #fbe6e9;
+    --warn: #955800;
+    --warn-soft: #fbefd6;
+    --neutral: #55526a;
+    --neutral-soft: #edebf2;
+    --shadow: 0 1px 2px rgba(29, 27, 38, .05), 0 4px 14px rgba(29, 27, 38, .04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121118;
+      --surface: #1b1a24;
+      --surface-2: #24222f;
+      --text: #ecebf3;
+      --muted: #a29fb6;
+      --border: #302e3f;
+      --accent: #6a55ea;
+      --accent-text: #a99bff;
+      --accent-soft: #2a2552;
+      --on-accent: #ffffff;
+      --up: #4fd09a;
+      --up-soft: #143326;
+      --down: #ff8490;
+      --down-soft: #40191f;
+      --warn: #f2b950;
+      --warn-soft: #3a2b0e;
+      --neutral: #b9b6cb;
+      --neutral-soft: #2a2837;
+      --shadow: none;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  h1, h2, h3, p, dl, dd, ul, ol { margin: 0; padding: 0; }
+  ul, ol { list-style: none; }
+  button, input, select { font: inherit; color: inherit; }
+  img { display: block; max-width: 100%; }
+  [hidden] { display: none !important; }
+  .num { font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+  :focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+
+  /* ---- header ---- */
+  .topbar { background: var(--surface); border-bottom: 1px solid var(--border); }
+  .topbar-inner {
+    max-width: 1180px; margin: 0 auto; padding: 10px 16px;
+    display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 18px;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; margin-right: auto; align-self: center; }
+  .brand h1 { font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+  .brand-mark {
+    width: 26px; height: 26px; border-radius: 7px; background: var(--accent);
+    display: grid; place-items: center;
+  }
+  .brand-mark svg { width: 16px; height: 16px; }
+  .tag {
+    font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--accent-text); background: var(--accent-soft); border-radius: 5px; padding: 1px 6px;
+  }
+  .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .field > label, .field > .label { font-size: 12px; color: var(--muted); font-weight: 550; }
+  .field-row { display: flex; gap: 6px; }
+  select, input[type="text"] {
+    height: 34px; padding: 0 9px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); min-width: 0;
+  }
+  select { padding-right: 4px; }
+  input[type="text"] { width: 150px; }
+  .quota { min-width: 230px; flex: 0 1 290px; }
+  .quota-track {
+    display: flex; height: 8px; border-radius: 99px; overflow: hidden;
+    background: var(--neutral-soft); margin: 5px 0 4px;
+  }
+  .quota-used { background: var(--accent-text); }
+  .quota-reserved {
+    background: repeating-linear-gradient(135deg, var(--accent-text) 0 3px, transparent 3px 6px);
+    opacity: .6;
+  }
+  .quota.is-spent .quota-used { background: var(--down); }
+  .quota-text { font-size: 12px; line-height: 1.35; }
+
+  /* ---- layout ---- */
+  .layout {
+    max-width: 1180px; margin: 0 auto; padding: 16px;
+    display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr);
+  }
+  @media (min-width: 720px) {
+    .layout { grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); align-items: start; }
+  }
+  .column { display: grid; gap: 16px; min-width: 0; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    padding: 16px; box-shadow: var(--shadow); min-width: 0;
+  }
+  .card-title {
+    font-size: 13px; font-weight: 650; letter-spacing: .03em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 10px;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
+
+  /* ---- buttons ---- */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    min-height: 36px; padding: 0 14px; border-radius: 9px; border: 1px solid var(--border);
+    background: var(--surface); font-weight: 600; cursor: pointer;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--accent-text); }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+  .btn-block { width: 100%; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* ---- upload ---- */
+  .drop {
+    display: grid; place-items: center; text-align: center; gap: 4px;
+    min-height: 150px; padding: 14px; border: 1.5px dashed var(--border); border-radius: 12px;
+    background: var(--surface-2); cursor: pointer; position: relative;
+  }
+  .drop:hover, .drop.is-over { border-color: var(--accent-text); background: var(--accent-soft); }
+  .drop:focus-within { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+  .drop input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+  .drop-hint strong { color: var(--accent-text); }
+  .drop img { max-height: 190px; border-radius: 8px; border: 1px solid var(--border); }
+  .file-name { margin: 8px 0 10px; overflow-wrap: anywhere; min-height: 20px; }
+
+  /* ---- history ---- */
+  .history { display: grid; gap: 6px; }
+  .history-item {
+    display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px; align-items: center;
+    width: 100%; padding: 7px; text-align: left; cursor: pointer;
+    border: 1px solid transparent; border-radius: 10px; background: transparent;
+  }
+  .history-item:hover:not(:disabled) { background: var(--surface-2); }
+  .history-item[aria-current="true"] { background: var(--accent-soft); border-color: var(--accent-text); }
+  .history-item:disabled { cursor: progress; opacity: .7; }
+  .thumb {
+    width: 56px; height: 42px; border-radius: 7px; border: 1px solid var(--border);
+    background: var(--neutral-soft); object-fit: cover;
+  }
+  .history-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .history-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+
+  /* ---- badges ---- */
+  .badge {
+    display: inline-flex; align-items: center; border-radius: 99px; padding: 1px 9px;
+    font-size: 12px; font-weight: 650; white-space: nowrap;
+    color: var(--neutral); background: var(--neutral-soft);
+  }
+  .badge.good { color: var(--up); background: var(--up-soft); }
+  .badge.bad { color: var(--down); background: var(--down-soft); }
+  .badge.warn { color: var(--warn); background: var(--warn-soft); }
+  .badge.accent { color: var(--accent-text); background: var(--accent-soft); }
+  .badge.lg { font-size: 13px; padding: 3px 12px; }
+
+  /* ---- panel states ---- */
+  .panel { min-height: 320px; }
+  .empty { display: grid; place-items: center; text-align: center; min-height: 280px; gap: 6px; }
+  .empty p { max-width: 340px; }
+
+  .steps { display: grid; gap: 14px; padding: 18px 6px; max-width: 360px; margin: 0 auto; }
+  .step { display: grid; grid-template-columns: 26px 1fr; gap: 12px; align-items: center; color: var(--muted); }
+  .step-dot {
+    width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--border);
+    display: grid; place-items: center; font-size: 13px; font-weight: 700; line-height: 1;
+  }
+  .step.is-active { color: var(--text); font-weight: 650; font-size: 17px; }
+  .step.is-active .step-dot { border-color: var(--accent-text); background: var(--accent-soft); }
+  .step.is-active .step-dot::after {
+    content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent-text);
+  }
+  .step.is-done { opacity: .6; }
+  .step.is-done .step-dot { border-color: var(--up); color: var(--up); }
+  .step.is-done .step-dot::after { content: "\2713"; }
+  .dots span { animation: blink 1.2s infinite both; }
+  .dots span:nth-child(2) { animation-delay: .2s; }
+  .dots span:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: .15; } 40% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .dots span { animation: none; } }
+
+  .failure { display: grid; justify-items: center; text-align: center; gap: 10px; padding: 26px 8px; }
+  .failure-icon {
+    width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--down-soft); color: var(--down); font-size: 22px; font-weight: 700;
+  }
+  .failure-message { font-size: 19px; font-weight: 650; line-height: 1.35; max-width: 460px; overflow-wrap: anywhere; }
+  .failure-code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
+  .failure .thumb { width: 160px; height: auto; max-height: 120px; }
+
+  /* ---- result ---- */
+  .result { display: grid; gap: 18px; }
+  .section + .section { border-top: 1px solid var(--border); padding-top: 16px; }
+  .section h3 {
+    font-size: 13px; font-weight: 650; letter-spacing: .03em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 8px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  }
+  .asset-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: start; }
+  .asset-name { font-size: 22px; font-weight: 700; letter-spacing: -.01em; line-height: 1.2; overflow-wrap: anywhere; }
+  .asset-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 6px; }
+  .asset-thumb {
+    width: 150px; max-height: 110px; object-fit: cover; border-radius: 9px;
+    border: 1px solid var(--border); background: var(--neutral-soft);
+  }
+  @media (max-width: 460px) { .asset-thumb { width: 104px; } }
+  .price-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+  .price { font-size: 28px; font-weight: 700; letter-spacing: -.01em; }
+  .price-ccy { font-size: 14px; font-weight: 600; color: var(--muted); margin-left: 4px; }
+  .change { font-weight: 650; }
+  .change.up { color: var(--up); }
+  .change.down { color: var(--down); }
+  .prose { white-space: pre-line; overflow-wrap: anywhere; }
+
+  .bars { display: grid; gap: 7px; }
+  .bar-row { display: grid; grid-template-columns: 86px minmax(0, 1fr) 84px; gap: 10px; align-items: center; font-size: 13px; }
+  .bar-track { height: 9px; border-radius: 99px; background: var(--neutral-soft); overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 99px; min-width: 2px; }
+  .bar-fill.strong_buy { background: var(--up); }
+  .bar-fill.buy { background: var(--up); opacity: .6; }
+  .bar-fill.hold { background: var(--warn); }
+  .bar-fill.sell { background: var(--down); opacity: .6; }
+  .bar-fill.strong_sell { background: var(--down); }
+  .bar-value { text-align: right; }
+
+  .insights { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+  .insight { background: var(--surface-2); border-radius: 11px; padding: 12px; display: grid; gap: 6px; align-content: start; }
+  .insight-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; font-weight: 650; }
+
+  .levels { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 10px; }
+  @media (min-width: 900px) { .levels { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  .level { background: var(--surface-2); border-radius: 10px; padding: 8px 11px; }
+  .level dt { font-size: 12px; color: var(--muted); }
+  .level dd { font-size: 16px; font-weight: 650; }
+
+  .news { display: grid; gap: 12px; }
+  .news-item { display: grid; gap: 3px; }
+  .news-item a { color: var(--accent-text); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
+  .news-item a:hover { text-decoration: underline; }
+  .news-headline { font-weight: 600; overflow-wrap: anywhere; }
+  .news-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+  .result-foot { display: flex; flex-wrap: wrap; gap: 4px 16px; overflow-wrap: anywhere; }
+
+  footer { max-width: 1180px; margin: 0 auto; padding: 4px 16px 28px; }
+  footer a { color: var(--accent-text); }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12l4-4 3 2 5-6"/></svg>
+      </span>
+      <h1>Chart Analyzer</h1>
+      <span class="tag">demo</span>
+    </div>
+
+    <div class="field">
+      <label for="user-select">User (x-user-id)</label>
+      <div class="field-row">
+        <select id="user-select">
+          <option value="demo-user">demo-user (has history)</option>
+          <option value="demo-user-no-quota">demo-user-no-quota (quota spent)</option>
+          <option value="demo-user-new">demo-user-new (empty)</option>
+          <option value="__custom__">Custom id…</option>
+        </select>
+        <label class="sr-only" for="user-custom">Custom user id</label>
+        <input id="user-custom" type="text" maxlength="128" placeholder="any user id" autocomplete="off" spellcheck="false" hidden>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="lang-select">Analysis language</label>
+      <select id="lang-select">
+        <option value="en">English (en)</option>
+        <option value="es">Spanish (es)</option>
+        <option value="pt">Portuguese (pt)</option>
+        <option value="de">German (de)</option>
+        <option value="tr">Turkish (tr)</option>
+        <option value="fr">French (fr)</option>
+        <option value="it">Italian (it)</option>
+        <option value="id">Indonesian (id)</option>
+        <option value="fil">Filipino (fil)</option>
+      </select>
+    </div>
+
+    <div class="field quota" id="quota">
+      <span class="label" id="quota-label">Today's token quota</span>
+      <div class="quota-track" id="quota-meter" role="meter" aria-labelledby="quota-label" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+        <div class="quota-used" id="quota-used"></div>
+        <div class="quota-reserved" id="quota-reserved"></div>
+      </div>
+      <div class="quota-text num muted" id="quota-text">Loading…</div>
+    </div>
+  </div>
+</header>
+
+<main class="layout">
+  <div class="column">
+    <section class="card" aria-labelledby="upload-title">
+      <h2 class="card-title" id="upload-title">Upload a chart</h2>
+      <label class="drop" id="drop" for="file-input">
+        <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp">
+        <img id="preview" alt="Preview of the selected chart" hidden>
+        <span class="drop-hint" id="drop-hint">
+          <strong>Choose a chart image</strong> or drag it here<br>
+          <span class="muted small">PNG, JPEG or WebP. Samples are in <code>samples/</code>.</span>
+        </span>
+      </label>
+      <p class="file-name small muted" id="file-name"></p>
+      <button class="btn btn-primary btn-block" id="analyze-btn" type="button" disabled>Analyze</button>
+    </section>
+
+    <section class="card" aria-labelledby="history-title">
+      <h2 class="card-title" id="history-title">
+        <span>History</span>
+        <span class="num" id="history-count"></span>
+      </h2>
+      <ul class="history" id="history"></ul>
+      <p class="muted small" id="history-status" role="status"></p>
+      <button class="btn btn-block" id="more-btn" type="button" hidden>Load more</button>
+    </section>
+  </div>
+
+  <section class="card panel" id="panel" aria-live="polite" aria-label="Analysis"></section>
+</main>
+
+<footer class="small muted">
+  Demo client for the Chart Analyzer API ·
+  <a href="/docs">API docs</a> ·
+  <a href="/health">Health</a>
+</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  const API = "/api/v1";
+  const PAGE_SIZE = 8;
+  const FOLLOW_TIMEOUT_MS = 5 * 60 * 1000;
+  const KNOWN_USERS = ["demo-user", "demo-user-no-quota", "demo-user-new"];
+  const LANGUAGES = {
+    en: "English", es: "Spanish", pt: "Portuguese", de: "German", tr: "Turkish",
+    fr: "French", it: "Italian", id: "Indonesian", fil: "Filipino",
+  };
+
+  // Enum codes are stable machine values; the client owns their labels and colours.
+  const LABELS = {
+    status: { queued: "Queued", processing: "Processing", completed: "Completed", failed: "Failed" },
+    asset_type: { stock: "Stock", crypto: "Crypto" },
+    consensus: { buy: "Buy", hold: "Hold", sell: "Sell" },
+    rating: { strong_buy: "Strong Buy", buy: "Buy", hold: "Hold", sell: "Sell", strong_sell: "Strong Sell" },
+    trend: { bullish: "Bullish", bearish: "Bearish", sideways: "Sideways", neutral: "Neutral" },
+    volatility: { high: "High", medium: "Medium", low: "Low" },
+    market_sentiment: { bullish: "Bullish", bearish: "Bearish", neutral: "Neutral" },
+    position: { long: "Long", short: "Short" },
+    news_sentiment: { positive: "Positive", negative: "Negative", neutral: "Neutral" },
+  };
+  const TONES = {
+    status: { queued: "accent", processing: "accent", completed: "good", failed: "bad" },
+    consensus: { buy: "good", hold: "warn", sell: "bad" },
+    trend: { bullish: "good", bearish: "bad", sideways: "warn" },
+    volatility: { high: "warn", low: "good" },
+    market_sentiment: { bullish: "good", bearish: "bad" },
+    position: { long: "good", short: "bad" },
+    news_sentiment: { positive: "good", negative: "bad" },
+  };
+  const STEPS = [
+    { key: "uploading", label: "Uploading chart" },
+    { key: "recognizing", label: "Recognizing chart" },
+    { key: "market_data", label: "Getting price info" },
+    { key: "analyzing", label: "Analyzing chart" },
+  ];
+  // Which step is in progress for a given server stage. "queued" already waits for recognition.
+  const STAGE_STEP = { queued: 1, recognizing: 1, market_data: 2, analyzing: 3, done: 4 };
+
+  const $ = (id) => document.getElementById(id);
+  const dom = {
+    userSelect: $("user-select"), userCustom: $("user-custom"), langSelect: $("lang-select"),
+    quota: $("quota"), quotaMeter: $("quota-meter"), quotaUsed: $("quota-used"),
+    quotaReserved: $("quota-reserved"), quotaText: $("quota-text"),
+    drop: $("drop"), fileInput: $("file-input"), preview: $("preview"), dropHint: $("drop-hint"),
+    fileName: $("file-name"), analyzeBtn: $("analyze-btn"),
+    history: $("history"), historyCount: $("history-count"), historyStatus: $("history-status"),
+    moreBtn: $("more-btn"), panel: $("panel"),
+  };
+
+  const state = {
+    userId: "demo-user",
+    language: "en",
+    file: null,
+    previewUrl: null,
+    busy: false,          // an upload or a followed analysis is in flight
+    session: 0,           // bumped on every user change; stale async work checks it and stops
+    run: null,            // AbortController of the analysis being followed
+    selectedId: null,
+    history: { items: [], total: 0, loading: false },
+    images: new Map(),    // image url -> Promise<object URL>, per user session
+  };
+
+  // ------------------------------------------------------------------ small helpers
+
+  /** Build an element. Children that are strings become text nodes, so nothing is parsed as HTML. */
+  function el(tag, attrs, ...children) {
+    const node = document.createElement(tag);
+    for (const [name, value] of Object.entries(attrs || {})) {
+      if (value === null || value === undefined || value === false) continue;
+      if (name === "class") node.className = value;
+      else if (name.startsWith("on")) node.addEventListener(name.slice(2), value);
+      else node.setAttribute(name, value === true ? "" : String(value));
+    }
+    for (const child of children.flat()) {
+      if (child === null || child === undefined || child === false) continue;
+      node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
+    return node;
+  }
+
+  function label(group, code) {
+    if (code === null || code === undefined) return "—";
+    const known = LABELS[group] && LABELS[group][code];
+    if (known) return known;
+    const text = String(code).replace(/_/g, " ");
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  function badge(group, code, extraClass) {
+    const tone = (TONES[group] && TONES[group][code]) || "";
+    return el("span", { class: ["badge", tone, extraClass].filter(Boolean).join(" ") }, label(group, code));
+  }
+
+  const isNumber = (value) => typeof value === "number" && Number.isFinite(value);
+
+  function formatNumber(value) {
+    if (!isNumber(value)) return "—";
+    const abs = Math.abs(value);
+    const digits = abs !== 0 && abs < 1 ? 6 : abs < 10 ? 4 : 2;
+    return value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: digits });
+  }
+
+  function formatInt(value) {
+    return isNumber(value) ? Math.round(value).toLocaleString("en-US") : "—";
+  }
+
+  function formatPercent(value) {
+    return isNumber(value) ? value.toLocaleString("en-US", { maximumFractionDigits: 1 }) + "%" : "—";
+  }
+
+  function formatSigned(value, suffix) {
+    if (!isNumber(value)) return null;
+    const sign = value > 0 ? "+" : value < 0 ? "−" : "";
+    return sign + formatNumber(Math.abs(value)).replace(/(\.\d\d)\d+$/, "$1") + (suffix || "");
+  }
+
+  function parseDate(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  function formatDateTime(value) {
+    const date = parseDate(value);
+    if (!date) return "—";
+    return date.toLocaleString("en-GB", {
+      day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+    });
+  }
+
+  function formatDate(value) {
+    // Plain dates ("2026-10-01") must not shift a day in western time zones.
+    const plain = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value));
+    const date = plain ? new Date(+plain[1], +plain[2] - 1, +plain[3]) : parseDate(value);
+    if (!date) return "—";
+    return date.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  }
+
+  function safeHttpUrl(value) {
+    try {
+      const url = new URL(String(value));
+      return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function randomKey() {
+    if (window.crypto && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  const sleep = (ms, signal) => new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    if (signal) {
+      signal.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+      }, { once: true });
+    }
+  });
+
+  const isAbort = (error) => error && error.name === "AbortError";
+
+  function remember(key, value) {
+    try { localStorage.setItem("chart-analyzer-demo." + key, value); } catch { /* private mode */ }
+  }
+  function recall(key) {
+    try { return localStorage.getItem("chart-analyzer-demo." + key); } catch { return null; }
+  }
+
+  // ------------------------------------------------------------------ API access
+
+  class ApiError extends Error {
+    constructor(code, message, details) {
+      super(message);
+      this.code = code;
+      this.details = details;
+    }
+  }
+
+  function apiHeaders(extra) {
+    // Accept-Language makes errors outside an upload come back in the chosen language too.
+    return { "x-user-id": state.userId, "Accept-Language": state.language, ...extra };
+  }
+
+  async function toApiError(response) {
+    let body = null;
+    try { body = await response.json(); } catch { /* not JSON: a proxy or a crash page */ }
+    const error = body && body.error;
+    if (error && typeof error.message === "string") {
+      return new ApiError(String(error.code || "http_" + response.status), error.message, error.details);
+    }
+    return new ApiError("http_" + response.status, "The request failed (HTTP " + response.status + ").");
+  }
+
+  async function request(path, options) {
+    let response;
+    try {
+      response = await fetch(path, { cache: "no-store", ...options });
+    } catch (error) {
+      if (isAbort(error)) throw error;
+      throw new ApiError("network_error", "Could not reach the API. Is the server running?");
+    }
+    if (!response.ok) throw await toApiError(response);
+    return response;
+  }
+
+  async function getJson(path, signal) {
+    const response = await request(path, { headers: apiHeaders(), signal });
+    return response.json();
+  }
+
+  /** <img src> cannot send x-user-id, so images are fetched and shown through object URLs. */
+  function loadImage(img, url) {
+    if (typeof url !== "string" || !url.startsWith(API + "/")) return;
+    const session = state.session;
+    let pending = state.images.get(url);
+    if (!pending) {
+      pending = request(url, { headers: apiHeaders(), cache: "default" })
+        .then((response) => response.blob())
+        .then((blob) => URL.createObjectURL(blob));
+      state.images.set(url, pending);
+      pending.catch(() => { if (state.images.get(url) === pending) state.images.delete(url); });
+    }
+    pending.then(
+      (objectUrl) => { if (session === state.session) img.src = objectUrl; },
+      () => { /* the grey placeholder stays */ },
+    );
+  }
+
+  /** The final stream event carries the analysis without its links, so derive them from the id. */
+  function imageUrlOf(analysis) {
+    return analysis.image_url || API + "/analyses/" + encodeURIComponent(analysis.id) + "/image";
+  }
+
+  function forgetImages() {
+    for (const pending of state.images.values()) {
+      pending.then((objectUrl) => URL.revokeObjectURL(objectUrl), () => {});
+    }
+    state.images.clear();
+  }
+
+  /**
+   * Read a Server-Sent Events response with fetch, because EventSource cannot send headers.
+   * Calls onEvent({id, event, data}) per frame; returning true from it stops the stream.
+   */
+  async function readEventStream(path, { signal, lastEventId, onEvent }) {
+    const headers = apiHeaders({ Accept: "text/event-stream" });
+    if (lastEventId) headers["Last-Event-ID"] = lastEventId;
+    const response = await request(path, { headers, signal });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return false;
+        buffer = (buffer + decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n");
+        let end;
+        while ((end = buffer.indexOf("\n\n")) >= 0) {
+          const frame = parseFrame(buffer.slice(0, end));
+          buffer = buffer.slice(end + 2);
+          if (frame && onEvent(frame) === true) return true;
+        }
+      }
+    } finally {
+      reader.cancel().catch(() => {});
+    }
+  }
+
+  function parseFrame(text) {
+    let id = null;
+    let event = "message";
+    const data = [];
+    for (const line of text.split("\n")) {
+      if (line === "" || line.startsWith(":")) continue;  // keep-alive comment
+      const colon = line.indexOf(":");
+      const field = colon < 0 ? line : line.slice(0, colon);
+      let value = colon < 0 ? "" : line.slice(colon + 1);
+      if (value.startsWith(" ")) value = value.slice(1);
+      if (field === "id") id = value;
+      else if (field === "event") event = value;
+      else if (field === "data") data.push(value);
+    }
+    return data.length ? { id, event, data: data.join("\n") } : null;
+  }
+
+  // ------------------------------------------------------------------ quota
+
+  async function refreshQuota() {
+    const session = state.session;
+    try {
+      const quota = await getJson(API + "/quota");
+      if (session !== state.session) return;
+      const limit = Math.max(quota.daily_limit, 1);
+      const used = Math.min(Math.max(quota.used_tokens, 0), limit);
+      const reserved = Math.min(Math.max(quota.reserved_tokens, 0), limit - used);
+      dom.quotaUsed.style.width = (used / limit) * 100 + "%";
+      dom.quotaReserved.style.width = (reserved / limit) * 100 + "%";
+      dom.quotaMeter.setAttribute("aria-valuemax", String(quota.daily_limit));
+      dom.quotaMeter.setAttribute("aria-valuenow", String(quota.used_tokens));
+      dom.quota.classList.toggle("is-spent", quota.remaining_tokens <= 0);
+      const resets = parseDate(quota.resets_at);
+      const resetText = resets
+        ? resets.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) + untilText(resets)
+        : "—";
+      dom.quotaText.textContent =
+        formatInt(quota.used_tokens) + " used · " + formatInt(quota.reserved_tokens) +
+        " reserved · " + formatInt(quota.daily_limit) + " limit · resets " + resetText;
+      dom.quotaText.title = formatInt(quota.remaining_tokens) + " tokens remaining today";
+    } catch (error) {
+      if (session !== state.session) return;
+      dom.quotaUsed.style.width = "0%";
+      dom.quotaReserved.style.width = "0%";
+      dom.quotaText.textContent = error.message || "Quota unavailable";
+    }
+  }
+
+  function untilText(date) {
+    const minutes = Math.round((date.getTime() - Date.now()) / 60000);
+    if (minutes <= 0) return "";
+    const hours = Math.floor(minutes / 60);
+    return " (in " + (hours ? hours + "h " : "") + (minutes % 60) + "m)";
+  }
+
+  // ------------------------------------------------------------------ history
+
+  async function loadHistory({ reset }) {
+    const session = state.session;
+    const history = state.history;
+    if (history.loading && !reset) return;
+    history.loading = true;
+    dom.moreBtn.disabled = true;
+    if (reset && history.items.length === 0) dom.historyStatus.textContent = "Loading…";
+    const offset = reset ? 0 : history.items.length;
+    try {
+      const page = await getJson(API + "/analyses?limit=" + PAGE_SIZE + "&offset=" + offset);
+      if (session !== state.session) return;
+      const known = new Set(reset ? [] : history.items.map((item) => item.id));
+      const fresh = page.items.filter((item) => !known.has(item.id));
+      history.items = reset ? fresh : history.items.concat(fresh);
+      history.total = page.total;
+      // Nothing new on a later page means the list shifted under us: stop offering more.
+      history.exhausted = page.items.length === 0 || (!reset && fresh.length === 0);
+      dom.historyStatus.textContent = history.items.length ? "" : "No analyses yet. Upload a chart to start.";
+      renderHistory();
+    } catch (error) {
+      if (session !== state.session) return;
+      dom.historyStatus.textContent = "Could not load history: " + (error.message || "unknown error");
+    } finally {
+      if (session === state.session) {
+        history.loading = false;
+        dom.moreBtn.disabled = false;
+      }
+    }
+  }
+
+  function historyTitle(item) {
+    if (item.asset) return (item.asset.name ? item.asset.name + " · " : "") + item.asset.symbol;
+    return item.status === "queued" || item.status === "processing" ? "Analysis in progress" : "Unrecognized chart";
+  }
+
+  function renderHistory() {
+    const { items, total, exhausted } = state.history;
+    dom.history.replaceChildren(...items.map((item) => {
+      const thumb = el("img", { class: "thumb", alt: "", loading: "lazy" });
+      loadImage(thumb, item.image_url);
+      const language = LANGUAGES[item.language] ? item.language.toUpperCase() : String(item.language);
+      return el("li", null,
+        el("button", {
+          class: "history-item", type: "button", "data-id": item.id,
+          "aria-current": item.id === state.selectedId ? "true" : null,
+          onclick: () => openAnalysis(item.id),
+        },
+          thumb,
+          el("span", null,
+            el("span", { class: "history-title" }, historyTitle(item)),
+            el("span", { class: "history-meta small muted" },
+              badge("status", item.status),
+              el("span", { title: LANGUAGES[item.language] || null }, language),
+              el("span", { class: "num" }, formatDateTime(item.created_at)),
+            ),
+          ),
+        ),
+      );
+    }));
+    dom.historyCount.textContent = total ? items.length + " of " + total : "";
+    dom.moreBtn.hidden = exhausted || items.length >= total;
+    syncControls();
+  }
+
+  function markSelected(id) {
+    state.selectedId = id;
+    for (const button of dom.history.querySelectorAll(".history-item")) {
+      if (button.dataset.id === id) button.setAttribute("aria-current", "true");
+      else button.removeAttribute("aria-current");
+    }
+    try {
+      const url = new URL(location.href);
+      url.searchParams.set("user", state.userId);
+      if (id) url.searchParams.set("analysis", id); else url.searchParams.delete("analysis");
+      history.replaceState(null, "", url);
+    } catch { /* cosmetic only */ }
+  }
+
+  // ------------------------------------------------------------------ panel: states
+
+  function showEmpty() {
+    dom.panel.replaceChildren(
+      el("div", { class: "empty" },
+        el("div", null,
+          el("p", { style: "font-weight:650;font-size:17px" }, "No analysis selected"),
+          el("p", { class: "muted" }, "Upload a chart on the left, or pick an earlier analysis from the history."),
+        ),
+      ),
+    );
+  }
+
+  /** active = index of the step in progress; steps before it are done. */
+  function showProgress(active) {
+    dom.panel.replaceChildren(
+      el("h2", { class: "card-title" }, "Analyzing your chart"),
+      el("ol", { class: "steps" }, STEPS.map((step, index) => {
+        const stateClass = index < active ? " is-done" : index === active ? " is-active" : "";
+        return el("li", {
+          class: "step" + stateClass, "data-step": step.key,
+          "aria-current": index === active ? "step" : null,
+        },
+          el("span", { class: "step-dot", "aria-hidden": "true" }),
+          el("span", null, step.label,
+            index === active
+              ? el("span", { class: "dots", "aria-hidden": "true" }, el("span", null, "."), el("span", null, "."), el("span", null, "."))
+              : null,
+            index < active ? el("span", { class: "sr-only" }, " (done)") : null,
+          ),
+        );
+      })),
+    );
+  }
+
+  function showFailure(error, analysis) {
+    const code = (error && error.code) || "unknown_error";
+    const message = (error && error.message) || "Something went wrong.";
+    let thumb = null;
+    if (analysis && analysis.id) {
+      thumb = el("img", { class: "thumb", alt: "The uploaded image" });
+      loadImage(thumb, imageUrlOf(analysis));
+    }
+    let details = null;
+    if (error && error.details !== null && error.details !== undefined) {
+      const text = typeof error.details === "string" ? error.details : JSON.stringify(error.details);
+      details = el("p", { class: "failure-code muted" }, text);
+    }
+    const again = el("button", { class: "btn btn-primary", type: "button", onclick: resetUpload }, "Upload another chart");
+    dom.panel.replaceChildren(
+      el("div", { class: "failure", role: "alert" },
+        el("span", { class: "failure-icon", "aria-hidden": "true" }, "!"),
+        el("p", { class: "failure-message" }, message),
+        el("p", { class: "failure-code muted" }, code),
+        details,
+        thumb,
+        analysis ? el("p", { class: "small muted num" }, formatDateTime(analysis.created_at)) : null,
+        again,
+      ),
+    );
+  }
+
+  function resetUpload() {
+    setFile(null);
+    markSelected(null);
+    showEmpty();
+    dom.fileInput.focus();
+    dom.drop.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+
+  // ------------------------------------------------------------------ panel: result
+
+  function section(title, ...children) {
+    return el("section", { class: "section" }, title ? el("h3", null, title) : null, ...children);
+  }
+
+  function showResult(analysis) {
+    const result = analysis.result;
+    const asset = result.asset || analysis.asset || {};
+    const thumb = el("img", { class: "asset-thumb", alt: "The uploaded chart" });
+    loadImage(thumb, imageUrlOf(analysis));
+
+    const head = el("section", { class: "section asset-head" },
+      el("div", null,
+        el("h2", { class: "asset-name" }, asset.name || asset.symbol || "Unknown asset"),
+        el("div", { class: "asset-sub" },
+          el("span", { class: "badge accent lg num" }, asset.symbol || "—"),
+          asset.type ? el("span", { class: "badge" }, label("asset_type", asset.type)) : null,
+          el("span", { class: "small muted" }, LANGUAGES[analysis.language] || String(analysis.language)),
+        ),
+      ),
+      thumb,
+    );
+
+    dom.panel.replaceChildren(
+      el("div", { class: "result" },
+        head,
+        priceSection(result.current_price),
+        analystSection(result.analyst_review),
+        section("Summary", el("p", { class: "prose" }, result.summary)),
+        insightsSection(result.key_insights),
+        signalsSection(result.trading_signals),
+        newsSection(result.latest_news),
+        el("section", { class: "section result-foot small muted" },
+          el("span", { class: "num" }, "Tokens used: " + formatInt(analysis.tokens_used)),
+          el("span", { class: "num" }, "Created " + formatDateTime(analysis.created_at)),
+          el("span", { class: "num" }, "ID " + analysis.id),
+        ),
+      ),
+    );
+  }
+
+  function priceSection(price) {
+    if (!price) return null;
+    const direction = !isNumber(price.change_percent) && !isNumber(price.change) ? ""
+      : (isNumber(price.change_percent) ? price.change_percent : price.change) > 0 ? " up"
+      : (isNumber(price.change_percent) ? price.change_percent : price.change) < 0 ? " down" : "";
+    const parts = [formatSigned(price.change), formatSigned(price.change_percent, "%")].filter(Boolean);
+    const arrow = direction === " up" ? "▲ " : direction === " down" ? "▼ " : "";
+    const changeText = parts.length === 2 ? parts[0] + " (" + parts[1] + ")" : parts[0] || "—";
+    return section("Current Price",
+      el("div", { class: "price-row num" },
+        el("span", { class: "price" }, formatNumber(price.price), el("span", { class: "price-ccy" }, price.currency)),
+        el("span", { class: "change" + direction }, arrow + changeText),
+      ),
+      el("p", { class: "small muted num" }, "As of " + formatDateTime(price.as_of)),
+    );
+  }
+
+  function analystSection(review) {
+    if (!review) {
+      return section("Analyst Review", el("p", { class: "muted" }, "No analyst coverage for this asset"));
+    }
+    const rows = ["strong_buy", "buy", "hold", "sell", "strong_sell"].map((key) => {
+      const share = review[key] || {};
+      const percent = isNumber(share.percent) ? Math.min(Math.max(share.percent, 0), 100) : 0;
+      const fill = el("div", { class: "bar-fill " + key });
+      fill.style.width = percent + "%";
+      return el("div", { class: "bar-row" },
+        el("span", null, label("rating", key)),
+        el("div", { class: "bar-track", "aria-hidden": "true" }, fill),
+        el("span", { class: "bar-value num" }, formatPercent(share.percent),
+          el("span", { class: "muted" }, " (" + formatInt(share.count) + ")")),
+      );
+    });
+    const title = el("h3", null, "Analyst Review", badge("consensus", review.consensus, "lg"));
+    return el("section", { class: "section" },
+      title,
+      el("div", { class: "bars" }, rows),
+      el("p", { class: "small muted num", style: "margin-top:8px" },
+        formatInt(review.total_analysts) + " analysts · " + formatDate(review.period)),
+    );
+  }
+
+  function insightsSection(insights) {
+    if (!insights) return null;
+    const card = (title, group, insight) => insight && el("div", { class: "insight" },
+      el("div", { class: "insight-head" }, el("span", null, title), badge(group, insight.value)),
+      el("p", { class: "small prose" }, insight.explanation),
+    );
+    return section("Key Insights",
+      el("div", { class: "insights" },
+        card("Trend", "trend", insights.trend),
+        card("Volatility", "volatility", insights.volatility),
+        card("Market Sentiment", "market_sentiment", insights.market_sentiment),
+      ),
+    );
+  }
+
+  function signalsSection(signals) {
+    if (!signals) return null;
+    const level = (name, value) => el("div", { class: "level" },
+      el("dt", null, name), el("dd", { class: "num" }, formatNumber(value)));
+    return el("section", { class: "section" },
+      el("h3", null, "Trading Signals by AI", badge("position", signals.position, "lg")),
+      el("dl", { class: "levels" },
+        level("Start Level", signals.start_level),
+        level("Safety Stop", signals.safety_stop),
+        level("Projected Exit 1", signals.projected_exit_1),
+        level("Projected Exit 2", signals.projected_exit_2),
+        level("Support Level", signals.support_level),
+        level("Resistance Level", signals.resistance_level),
+      ),
+      el("p", { class: "prose" }, signals.rationale),
+    );
+  }
+
+  function newsSection(news) {
+    if (!Array.isArray(news) || news.length === 0) {
+      return section("Latest News", el("p", { class: "muted" }, "No recent news for this asset"));
+    }
+    return section("Latest News",
+      el("ul", { class: "news" }, news.map((item) => {
+        const href = safeHttpUrl(item.url);
+        const headline = href
+          ? el("a", { href, target: "_blank", rel: "noopener noreferrer" }, item.headline)
+          : el("span", { class: "news-headline" }, item.headline);
+        const translated = item.original_headline && item.original_headline !== item.headline;
+        return el("li", { class: "news-item" },
+          headline,
+          translated ? el("span", { class: "small muted" }, "Original: " + item.original_headline) : null,
+          el("div", { class: "news-meta small muted" },
+            badge("news_sentiment", item.sentiment),
+            el("span", null, item.source),
+            el("span", { class: "num" }, formatDateTime(item.published_at)),
+          ),
+        );
+      })),
+    );
+  }
+
+  // ------------------------------------------------------------------ flows
+
+  function syncControls() {
+    dom.analyzeBtn.disabled = state.busy || !state.file || !state.userId;
+    dom.analyzeBtn.textContent = state.busy ? "Analyzing…" : "Analyze";
+    dom.fileInput.disabled = state.busy;
+    for (const button of dom.history.querySelectorAll(".history-item")) button.disabled = state.busy;
+  }
+
+  function setBusy(busy) {
+    state.busy = busy;
+    syncControls();
+  }
+
+  function setFile(file) {
+    state.file = file || null;
+    if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
+    state.previewUrl = null;
+    if (!file) dom.fileInput.value = "";
+    if (file && file.type.startsWith("image/")) {
+      state.previewUrl = URL.createObjectURL(file);
+      dom.preview.src = state.previewUrl;
+    } else {
+      dom.preview.removeAttribute("src");
+    }
+    dom.preview.hidden = !state.previewUrl;
+    dom.dropHint.hidden = Boolean(state.previewUrl);
+    dom.fileName.textContent = file
+      ? file.name + " · " + (file.size / 1024).toLocaleString("en-US", { maximumFractionDigits: 0 }) + " KB"
+      : "";
+    syncControls();
+  }
+
+  /** Render whatever state an analysis is in. Returns true once it is finished. */
+  function renderAnalysis(analysis) {
+    if (analysis.status === "completed" && analysis.result) {
+      showResult(analysis);
+      return true;
+    }
+    if (analysis.status === "failed" || analysis.status === "completed") {
+      showFailure(analysis.error || { code: "internal_error", message: "The analysis has no result." }, analysis);
+      return true;
+    }
+    showProgress(STAGE_STEP[analysis.stage] || 1);
+    return false;
+  }
+
+  /**
+   * Follow a running analysis to its end: the event stream first, and if the stream closes
+   * early or fails, the plain GET, then the stream again from the last seen event.
+   */
+  async function follow(analysis, signal) {
+    const deadline = Date.now() + FOLLOW_TIMEOUT_MS;
+    let lastEventId = null;
+    let final = null;
+    while (Date.now() < deadline) {
+      try {
+        await readEventStream(analysis.events_url || API + "/analyses/" + analysis.id + "/events", {
+          signal,
+          lastEventId,
+          onEvent: (frame) => {
+            let data;
+            try { data = JSON.parse(frame.data); } catch { return false; }
+            if (frame.id) lastEventId = frame.id;
+            if (frame.event === "stage" && data.stage in STAGE_STEP) {
+              showProgress(STAGE_STEP[data.stage]);
+            } else if (frame.event === "completed" || frame.event === "failed") {
+              final = data;
+              return true;
+            }
+            return false;
+          },
+        });
+      } catch (error) {
+        if (isAbort(error)) throw error;
+        if (error instanceof ApiError && error.code === "analysis_not_found") throw error;
+        // Anything else: fall through to the polling check below.
+      }
+      if (final) return final;
+      const current = await getJson(API + "/analyses/" + analysis.id, signal);
+      if (current.status === "completed" || current.status === "failed") return current;
+      showProgress(STAGE_STEP[current.stage] || 1);
+      await sleep(1500, signal);
+    }
+    throw new ApiError("client_timeout", "The analysis is taking longer than expected. Check the history in a moment.");
+  }
+
+  /** Shared tail of "analyze" and "open from history": follow if needed, render, refresh. */
+  async function settle(analysis, signal, session) {
+    markSelected(analysis.id);
+    let finished = analysis;
+    let wasRunning = false;
+    if (!renderAnalysis(analysis)) {
+      wasRunning = true;
+      finished = await follow(analysis, signal);
+      if (session !== state.session) return;
+      renderAnalysis(finished);
+    }
+    if (wasRunning) {
+      refreshQuota();
+      loadHistory({ reset: true });
+    }
+  }
+
+  async function analyze() {
+    if (state.busy || !state.file || !state.userId) return;
+    const session = state.session;
+    const run = new AbortController();
+    state.run = run;
+    setBusy(true);
+    markSelected(null);
+    showProgress(0);
+    if (window.matchMedia("(max-width: 719px)").matches) {
+      dom.panel.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
+    let accepted = null;
+    try {
+      const form = new FormData();
+      form.append("image", state.file, state.file.name);
+      form.append("language", state.language);
+      const response = await request(API + "/analyses", {
+        method: "POST",
+        headers: apiHeaders({ "Idempotency-Key": randomKey() }),  // fresh per click
+        body: form,
+        signal: run.signal,
+      });
+      accepted = await response.json();
+      if (session !== state.session) return;
+      // The quota is reserved and the row exists as soon as the upload is accepted.
+      refreshQuota();
+      loadHistory({ reset: true });
+      await settle(accepted, run.signal, session);
+    } catch (error) {
+      if (isAbort(error) || session !== state.session) return;
+      showFailure(error, accepted);
+      refreshQuota();
+      loadHistory({ reset: true });
+    } finally {
+      if (state.run === run) {
+        state.run = null;
+        setBusy(false);
+      }
+    }
+  }
+
+  async function openAnalysis(id) {
+    if (state.busy) return;
+    const session = state.session;
+    const run = new AbortController();
+    state.run = run;
+    setBusy(true);
+    markSelected(id);
+    let analysis = null;
+    try {
+      analysis = await getJson(API + "/analyses/" + encodeURIComponent(id), run.signal);
+      if (session !== state.session) return;
+      await settle(analysis, run.signal, session);
+      if (window.matchMedia("(max-width: 719px)").matches) {
+        dom.panel.scrollIntoView({ block: "start", behavior: "smooth" });
+      }
+    } catch (error) {
+      if (isAbort(error) || session !== state.session) return;
+      showFailure(error, analysis);
+    } finally {
+      if (state.run === run) {
+        state.run = null;
+        setBusy(false);
+      }
+    }
+  }
+
+  function switchUser(userId, { initialAnalysis } = {}) {
+    state.session += 1;
+    if (state.run) state.run.abort();
+    state.run = null;
+    state.userId = userId;
+    state.selectedId = null;
+    state.history = { items: [], total: 0, loading: false };
+    forgetImages();
+    setBusy(false);
+    dom.history.replaceChildren();
+    dom.historyCount.textContent = "";
+    dom.moreBtn.hidden = true;
+    remember("user", userId);
+    if (!userId) {
+      dom.historyStatus.textContent = "Enter a user id to load its history.";
+      dom.quotaText.textContent = "Enter a user id";
+      dom.quotaUsed.style.width = "0%";
+      dom.quotaReserved.style.width = "0%";
+      showEmpty();
+      return;
+    }
+    showEmpty();
+    refreshQuota();
+    loadHistory({ reset: true });
+    if (initialAnalysis) openAnalysis(initialAnalysis);
+    else markSelected(null);
+  }
+
+  // ------------------------------------------------------------------ wiring
+
+  function chosenUser() {
+    return dom.userSelect.value === "__custom__" ? dom.userCustom.value.trim() : dom.userSelect.value;
+  }
+
+  dom.userSelect.addEventListener("change", () => {
+    const custom = dom.userSelect.value === "__custom__";
+    dom.userCustom.hidden = !custom;
+    if (custom) dom.userCustom.focus();
+    switchUser(chosenUser());
+  });
+
+  let customTimer = null;
+  dom.userCustom.addEventListener("input", () => {
+    clearTimeout(customTimer);
+    customTimer = setTimeout(() => {
+      if (chosenUser() !== state.userId) switchUser(chosenUser());
+    }, 450);
+  });
+  dom.userCustom.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    clearTimeout(customTimer);
+    if (chosenUser() !== state.userId) switchUser(chosenUser());
+  });
+
+  dom.langSelect.addEventListener("change", () => {
+    state.language = dom.langSelect.value;
+    remember("language", state.language);
+  });
+
+  dom.fileInput.addEventListener("change", () => setFile(dom.fileInput.files[0] || null));
+  for (const type of ["dragenter", "dragover"]) {
+    dom.drop.addEventListener(type, (event) => {
+      event.preventDefault();
+      if (!state.busy) dom.drop.classList.add("is-over");
+    });
+  }
+  for (const type of ["dragleave", "drop"]) {
+    dom.drop.addEventListener(type, (event) => {
+      event.preventDefault();
+      dom.drop.classList.remove("is-over");
+    });
+  }
+  dom.drop.addEventListener("drop", (event) => {
+    const file = event.dataTransfer && event.dataTransfer.files[0];
+    if (file && !state.busy) setFile(file);
+  });
+  // A file dropped beside the drop zone must not navigate the page away.
+  for (const type of ["dragover", "drop"]) window.addEventListener(type, (event) => event.preventDefault());
+
+  dom.analyzeBtn.addEventListener("click", analyze);
+  dom.moreBtn.addEventListener("click", () => loadHistory({ reset: false }));
+
+  // ------------------------------------------------------------------ start
+
+  (function start() {
+    const params = new URLSearchParams(location.search);
+    const language = params.get("lang") || recall("language");
+    if (language && LANGUAGES[language]) {
+      state.language = language;
+      dom.langSelect.value = language;
+    }
+    const user = (params.get("user") || recall("user") || "demo-user").trim().slice(0, 128) || "demo-user";
+    if (KNOWN_USERS.includes(user)) {
+      dom.userSelect.value = user;
+    } else {
+      dom.userSelect.value = "__custom__";
+      dom.userCustom.value = user;
+      dom.userCustom.hidden = false;
+    }
+    switchUser(user, { initialAnalysis: params.get("analysis") });
+  })();
+})();
+</script>
+</body>
+</html>

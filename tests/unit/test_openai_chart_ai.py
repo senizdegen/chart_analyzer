@@ -239,6 +239,50 @@ async def test_analyze_keeps_non_ascii_market_data_readable() -> None:
     assert "Apple'ın geliri arttı" in prompt_text(recorder.body)
 
 
+def _candidate_news(body: dict[str, Any]) -> list[dict[str, Any]]:
+    """The news the model is offered, parsed back from the market-data JSON of the prompt."""
+    decoder = json.JSONDecoder()
+    text = prompt_text(body)
+    position = text.find("{")
+    while position != -1:
+        try:
+            data, _ = decoder.raw_decode(text, position)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict) and "candidate_news" in data:
+            news: list[dict[str, Any]] = data["candidate_news"]
+            return news
+        position = text.find("{", position + 1)
+    raise AssertionError("no market data JSON in the prompt")
+
+
+async def test_analyze_cuts_long_news_texts_so_the_prompt_size_is_bounded() -> None:
+    summary = "".join(f"{index:04d}" for index in range(250))  # 1000 characters, no repeats
+    headline = "".join(f"h{index:03d}" for index in range(125))  # 500 characters
+    article = make_snapshot().news[0].model_copy(update={"headline": headline, "summary": summary})
+    recorder = answering(completion(make_insights().model_dump_json()))
+
+    await make_ai(recorder).analyze(IMAGE, Language.EN, make_snapshot(news=[article]))
+
+    (sent,) = _candidate_news(recorder.body)
+    assert sent["summary"] == summary[:300]
+    assert sent["headline"] == headline[:200]
+    text = prompt_text(recorder.body)
+    assert summary[:301] not in text
+    assert headline[:201] not in text
+
+
+async def test_analyze_sends_short_news_texts_whole() -> None:
+    summary, headline = "s" * 300, "h" * 200  # exactly at the limits
+    article = make_snapshot().news[0].model_copy(update={"headline": headline, "summary": summary})
+    recorder = answering(completion(make_insights().model_dump_json()))
+
+    await make_ai(recorder).analyze(IMAGE, Language.EN, make_snapshot(news=[article]))
+
+    (sent,) = _candidate_news(recorder.body)
+    assert sent == {"id": article.id, "headline": headline, "summary": summary, "source": "Yahoo"}
+
+
 # --- provider errors --------------------------------------------------------------------------
 
 

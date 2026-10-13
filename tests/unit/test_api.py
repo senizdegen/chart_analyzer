@@ -8,9 +8,10 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 
-from chart_analyzer.api.app import create_app
+from chart_analyzer.api.app import MULTIPART_OVERHEAD_BYTES, create_app
 from chart_analyzer.api.dependencies import ApiServices
 from chart_analyzer.api.errors import parse_accept_language
+from chart_analyzer.application.localization import message_for
 from chart_analyzer.application.process_analysis import ProcessAnalysis
 from chart_analyzer.application.queries import AnalysisQueries
 from chart_analyzer.application.submit_analysis import SubmitAnalysis
@@ -34,6 +35,8 @@ from tests.fakes import (
 USER = {"x-user-id": "user-1"}
 PNG = ("chart.png", b"png-bytes", "image/png")
 MAX_IMAGE_BYTES = 1024
+# the largest request the size guard lets through to the endpoint
+MAX_REQUEST_BYTES = MAX_IMAGE_BYTES + MULTIPART_OVERHEAD_BYTES
 
 
 class PickyInspector(FakeInspector):
@@ -75,6 +78,7 @@ class System:
             self.progress,
             self.clock,
             lease=timedelta(seconds=180),
+            deadline=timedelta(seconds=150),
             max_news=3,
         )
 
@@ -165,10 +169,118 @@ class TestSubmit:
         assert response.status_code == 413
         assert response.json()["error"]["code"] == "image_too_large"
 
+    async def test_accepts_a_file_of_exactly_the_maximum_size(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        largest = ("max.png", b"x" * MAX_IMAGE_BYTES, "image/png")
+
+        assert (await upload(client, files={"image": largest})).status_code == 202
+
     async def test_responses_carry_a_request_id(self, client: httpx.AsyncClient) -> None:
         response = await upload(client, headers=USER | {"x-request-id": "req-42"})
 
         assert response.headers["x-request-id"] == "req-42"
+
+
+class TestUploadSizeGuard:
+    """Oversized requests are refused from their Content-Length, before the body is parsed."""
+
+    async def test_refuses_a_request_declared_larger_than_any_valid_upload(
+        self, client: httpx.AsyncClient, system: System
+    ) -> None:
+        huge = ("huge.png", b"x" * (MAX_REQUEST_BYTES + 1), "image/png")
+
+        response = await upload(client, files={"image": huge})
+
+        assert response.status_code == 413
+        assert response.json()["error"] == {
+            "code": "image_too_large",
+            "message": message_for(ErrorCode.IMAGE_TOO_LARGE, Language.EN),
+        }
+        assert not system.db.rows and not system.storage.files
+
+    async def test_refusal_is_localized_from_accept_language_as_the_form_is_never_read(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        huge = ("huge.png", b"x" * (MAX_REQUEST_BYTES + 1), "image/png")
+
+        response = await upload(
+            client,
+            files={"image": huge},
+            data={"language": "es"},  # inside the body the guard does not look at
+            headers=USER | {"Accept-Language": "de-DE,de;q=0.9"},
+        )
+
+        german = message_for(ErrorCode.IMAGE_TOO_LARGE, Language.DE)
+        assert german != message_for(ErrorCode.IMAGE_TOO_LARGE, Language.EN)
+        assert response.status_code == 413
+        assert response.json()["error"] == {"code": "image_too_large", "message": german}
+
+    async def test_the_threshold_is_the_image_limit_plus_room_for_the_multipart_envelope(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        # Bodies that are not even a form: only the guard can answer 413 to them, so the
+        # status tells whether it was the guard or the endpoint that looked at the request.
+        at_threshold = await client.post(
+            "/api/v1/analyses", headers=USER, content=b"x" * MAX_REQUEST_BYTES
+        )
+        over_threshold = await client.post(
+            "/api/v1/analyses", headers=USER, content=b"x" * (MAX_REQUEST_BYTES + 1)
+        )
+
+        assert at_threshold.request.headers["content-length"] == str(MAX_REQUEST_BYTES)
+        assert at_threshold.status_code == 422
+        assert at_threshold.json()["error"]["code"] == "validation_error"
+        assert over_threshold.status_code == 413
+        assert over_threshold.json()["error"]["code"] == "image_too_large"
+
+    async def test_refuses_before_the_caller_is_even_identified(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        response = await client.post("/api/v1/analyses", content=b"x" * (MAX_REQUEST_BYTES + 1))
+
+        assert response.status_code == 413  # not 401: nothing of the request was processed
+
+    async def test_file_over_the_image_limit_but_under_the_threshold_is_left_to_the_endpoint(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        big = ("big.png", b"x" * (MAX_IMAGE_BYTES + 1), "image/png")
+
+        response = await upload(
+            client,
+            files={"image": big},
+            data={"language": "es"},
+            headers=USER | {"Accept-Language": "de"},
+        )
+
+        # The endpoint did read the form: the error is in the language chosen there.
+        assert int(response.request.headers["content-length"]) <= MAX_REQUEST_BYTES
+        assert response.status_code == 413
+        assert response.json()["error"] == {
+            "code": "image_too_large",
+            "message": message_for(ErrorCode.IMAGE_TOO_LARGE, Language.ES),
+        }
+
+    async def test_refused_responses_carry_a_request_id(self, client: httpx.AsyncClient) -> None:
+        response = await client.post(
+            "/api/v1/analyses",
+            headers=USER | {"x-request-id": "req-big"},
+            content=b"x" * (MAX_REQUEST_BYTES + 1),
+        )
+
+        assert response.status_code == 413
+        assert response.headers["x-request-id"] == "req-big"
+
+    async def test_requests_that_are_not_uploads_are_not_guarded(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        oversized = b"x" * (MAX_REQUEST_BYTES + 1)
+
+        health = await client.request("GET", "/health", content=oversized)
+        history = await client.request("GET", "/api/v1/analyses", headers=USER, content=oversized)
+
+        assert health.request.headers["content-length"] == str(len(oversized))
+        assert (health.status_code, history.status_code) == (200, 200)
 
 
 class TestIdempotency:
@@ -295,6 +407,73 @@ class TestReadingAnalyses:
         assert response.status_code == 200
         assert response.headers["content-type"] == "image/png"
         assert response.content == b"png-bytes"
+
+    async def test_image_whose_file_is_gone_is_404_not_a_server_error(
+        self, client: httpx.AsyncClient, system: System
+    ) -> None:
+        analysis_id = (await upload(client)).json()["id"]
+        system.storage.files.clear()  # the row outlived its file
+
+        response = await client.get(f"/api/v1/analyses/{analysis_id}/image", headers=USER)
+
+        assert response.status_code == 404
+        assert response.json()["error"] == {
+            "code": "analysis_not_found",
+            "message": "Analysis not found.",
+        }
+        # the analysis itself is still there
+        assert (
+            await client.get(f"/api/v1/analyses/{analysis_id}", headers=USER)
+        ).status_code == 200
+
+    async def test_query_for_an_image_whose_file_is_gone_returns_nothing(
+        self, system: System
+    ) -> None:
+        analysis = system.db.seed(make_analysis(uuid4()))
+        queries = AnalysisQueries(
+            lambda: InMemoryUnitOfWork(system.db),
+            system.storage,
+            QuotaPolicy(daily_limit=500_000, reservation_tokens=20_000, max_active_analyses=3),
+            system.clock,
+        )
+
+        assert await queries.get_image(analysis.id, "user-1") is None
+
+        system.storage.put(analysis.image, b"restored")
+        image = await queries.get_image(analysis.id, "user-1")
+        assert image is not None and image.data == b"restored"
+
+
+class TestUnknownRoutes:
+    @pytest.mark.parametrize("path", ["/nope", "/api/v1/nope", "/api/v2/analyses"])
+    async def test_unknown_route_is_a_generic_not_found(
+        self, client: httpx.AsyncClient, path: str
+    ) -> None:
+        response = await client.get(path, headers=USER)
+
+        assert response.status_code == 404
+        assert response.json()["error"] == {"code": "not_found", "message": "Not found."}
+
+    async def test_unknown_route_follows_accept_language(self, client: httpx.AsyncClient) -> None:
+        response = await client.get("/nope", headers={"Accept-Language": "tr"})
+
+        assert response.json()["error"] == {"code": "not_found", "message": "Bulunamadı."}
+
+    async def test_unknown_analysis_keeps_its_own_code(self, client: httpx.AsyncClient) -> None:
+        # a route that exists, an id that does not: this is about the analysis
+        for path in ("", "/events", "/image"):
+            response = await client.get(f"/api/v1/analyses/{uuid4()}{path}", headers=USER)
+
+            assert response.status_code == 404, path
+            assert response.json()["error"]["code"] == "analysis_not_found", path
+
+    async def test_wrong_method_on_a_known_route_is_not_reported_as_not_found(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        response = await client.delete("/api/v1/analyses", headers=USER)
+
+        assert response.status_code == 405
+        assert response.json()["error"]["code"] == "validation_error"
 
 
 class TestHistory:

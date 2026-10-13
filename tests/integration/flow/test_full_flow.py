@@ -126,6 +126,7 @@ async def system(
         progress,
         clock,
         lease=timedelta(seconds=30),
+        deadline=timedelta(seconds=20),
         max_news=3,
     )
     # The test topology has a single 1-second delay queue: two retries, then the DLQ.

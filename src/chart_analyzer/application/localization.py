@@ -91,6 +91,17 @@ _MESSAGES: dict[ErrorCode, dict[Language, str]] = {
         _L.ID: "Analisis tidak ditemukan.",
         _L.FIL: "Hindi nahanap ang pagsusuri.",
     },
+    _E.NOT_FOUND: {
+        _L.EN: "Not found.",
+        _L.ES: "No encontrado.",
+        _L.PT: "Não encontrado.",
+        _L.DE: "Nicht gefunden.",
+        _L.TR: "Bulunamadı.",
+        _L.FR: "Introuvable.",
+        _L.IT: "Non trovato.",
+        _L.ID: "Tidak ditemukan.",
+        _L.FIL: "Hindi nahanap.",
+    },
     _E.VALIDATION_ERROR: {
         _L.EN: "The request is invalid.",
         _L.ES: "La solicitud no es válida.",

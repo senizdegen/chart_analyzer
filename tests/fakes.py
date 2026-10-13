@@ -261,27 +261,40 @@ class InMemoryAnalysisRepository:
         )
         return ClaimResult(ClaimStatus.CLAIMED, claimed)
 
+    def _in_progress(self, analysis_id: UUID) -> bool:
+        return self._db.analysis(analysis_id).status is AnalysisStatus.PROCESSING
+
+    def _owned_by(self, analysis_id: UUID, attempt: int) -> bool:
+        return self._in_progress(analysis_id) and self._db.analysis(analysis_id).attempts == attempt
+
     async def set_stage(self, analysis_id: UUID, stage: Stage) -> None:
-        self._update(analysis_id, stage=stage)
+        if self._in_progress(analysis_id):
+            self._update(analysis_id, stage=stage)
 
     async def save_recognition(
         self, analysis_id: UUID, recognition: ChartRecognition, *, tokens: int
     ) -> None:
         current = self._db.analysis(analysis_id)
-        self._update(analysis_id, recognition=recognition, tokens_used=current.tokens_used + tokens)
+        if self._in_progress(analysis_id):
+            self._update(
+                analysis_id, recognition=recognition, tokens_used=current.tokens_used + tokens
+            )
 
     async def save_market_snapshot(self, analysis_id: UUID, snapshot: MarketSnapshot) -> None:
-        self._update(analysis_id, market_snapshot=snapshot)
-
-    async def add_tokens(self, analysis_id: UUID, tokens: int) -> None:
-        current = self._db.analysis(analysis_id)
-        self._update(analysis_id, tokens_used=current.tokens_used + tokens)
+        if self._in_progress(analysis_id):
+            self._update(analysis_id, market_snapshot=snapshot)
 
     async def complete(
-        self, analysis_id: UUID, result: AnalysisResult, *, tokens: int, now: datetime
+        self,
+        analysis_id: UUID,
+        result: AnalysisResult,
+        *,
+        tokens: int,
+        now: datetime,
+        attempt: int,
     ) -> bool:
         current = self._db.analysis(analysis_id)
-        if current.status is not AnalysisStatus.PROCESSING:
+        if not self._owned_by(analysis_id, attempt):
             return False
         self._update(
             analysis_id,
@@ -293,8 +306,12 @@ class InMemoryAnalysisRepository:
         )
         return True
 
-    async def fail(self, analysis_id: UUID, code: ErrorCode, *, now: datetime) -> bool:
+    async def fail(
+        self, analysis_id: UUID, code: ErrorCode, *, now: datetime, attempt: int | None = None
+    ) -> bool:
         if self._db.analysis(analysis_id).status.is_terminal:
+            return False
+        if attempt is not None and not self._owned_by(analysis_id, attempt):
             return False
         self._update(
             analysis_id,
@@ -305,10 +322,29 @@ class InMemoryAnalysisRepository:
         )
         return True
 
-    async def release(self, analysis_id: UUID) -> None:
-        if self._db.analysis(analysis_id).status is AnalysisStatus.PROCESSING:
+    async def release(self, analysis_id: UUID, *, attempt: int) -> None:
+        if self._owned_by(analysis_id, attempt):
             self._update(analysis_id, status=AnalysisStatus.QUEUED)
             self._db.rows[analysis_id].locked_at = None
+
+    async def fail_stale(
+        self, *, inactive_since: datetime, code: ErrorCode, now: datetime
+    ) -> Sequence[UUID]:
+        stale = [
+            row.analysis.id
+            for row in self._db.rows.values()
+            if row.analysis.status.is_active and row.analysis.updated_at < inactive_since
+        ]
+        for analysis_id in stale:
+            self._update(
+                analysis_id,
+                status=AnalysisStatus.FAILED,
+                stage=Stage.DONE,
+                error_code=code,
+                completed_at=now,
+            )
+            self._db.rows[analysis_id].locked_at = None
+        return stale
 
 
 class InMemoryOutboxRepository:
@@ -382,8 +418,16 @@ class InMemoryImageStorage:
         self.files[key] = image
         return StoredImage(key=key, content_type=image.content_type)
 
+    def put(self, image: StoredImage, data: bytes = b"chart") -> None:
+        """Store the file of an analysis that was seeded straight into the database."""
+        self.files[image.key] = ChartImage(data=data, content_type=image.content_type)
+
     async def load(self, image: StoredImage) -> ChartImage:
-        return self.files.get(image.key, ChartImage(data=b"chart", content_type=image.content_type))
+        try:
+            return self.files[image.key]
+        except KeyError:
+            # like the real storage: a row can outlive its file
+            raise FileNotFoundError(image.key) from None
 
     async def delete(self, image: StoredImage) -> None:
         self.files.pop(image.key, None)

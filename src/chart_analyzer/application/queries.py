@@ -5,10 +5,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+import structlog
+
 from chart_analyzer.application.ports.services import ChartImage, Clock, ImageStorage
 from chart_analyzer.application.ports.unit_of_work import UnitOfWorkFactory
 from chart_analyzer.domain.analysis import Analysis
 from chart_analyzer.domain.quota import QuotaPolicy, next_reset, utc_day_start
+
+log = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +53,13 @@ class AnalysisQueries:
         analysis = await self.get(analysis_id, user_id)
         if analysis is None:
             return None
-        return await self._storage.load(analysis.image)
+        try:
+            return await self._storage.load(analysis.image)
+        except FileNotFoundError:
+            # The row outlived its file (storage was wiped, or a different volume is
+            # mounted). For the caller that is simply "no image".
+            log.warning("image.missing", analysis_id=str(analysis_id))
+            return None
 
     async def get_quota(self, user_id: str) -> QuotaStatus:
         now = self._clock.now()

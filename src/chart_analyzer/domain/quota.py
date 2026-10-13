@@ -50,10 +50,16 @@ class QuotaPolicy:
 
     def decide(self, usage: QuotaUsage) -> QuotaDecision:
         """May the user start one more analysis?"""
-        committed = usage.used_tokens + self.reserved_tokens(usage)
-        if committed + self.reservation_tokens > self.daily_limit:
+        if usage.used_tokens + self.reservation_tokens > self.daily_limit:
+            # Not even an idle user could start one more today.
             return QuotaDecision.DAILY_LIMIT_REACHED
-        if usage.active_analyses >= self.max_active_analyses:
+        committed = usage.used_tokens + self.reserved_tokens(usage)
+        if (
+            committed + self.reservation_tokens > self.daily_limit
+            or usage.active_analyses >= self.max_active_analyses
+        ):
+            # Only the analyses in progress stand in the way: retrying once they finish
+            # may succeed, so this is not reported as the daily limit.
             return QuotaDecision.TOO_MANY_ACTIVE
         return QuotaDecision.ALLOWED
 

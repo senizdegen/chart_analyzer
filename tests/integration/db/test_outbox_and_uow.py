@@ -8,7 +8,7 @@ import pytest
 from chart_analyzer.domain.analysis import NewAnalysis, StoredImage
 from chart_analyzer.domain.enums import Language
 from tests.fakes import NOW
-from tests.integration.db.conftest import UowFactory, add_analysis
+from tests.integration.db.conftest import LEASE, UowFactory, add_analysis
 
 pytestmark = pytest.mark.integration
 
@@ -129,14 +129,14 @@ async def test_work_after_commit_belongs_to_a_new_transaction(uow_factory: UowFa
     dropped = new_analysis()
 
     async with uow_factory() as uow:
-        await uow.analyses.add_tokens(kept.id, 100)
+        await uow.analyses.claim(kept.id, now=NOW, lease=LEASE)
         await uow.commit()
         await uow.analyses.add(dropped)  # never committed
 
     async with uow_factory() as uow:
         stored = await uow.analyses.get(kept.id)
         assert stored is not None
-        assert stored.tokens_used == 100
+        assert stored.attempts == 1
         assert await uow.analyses.get(dropped.id) is None
 
 

@@ -8,6 +8,7 @@ provider is asked directly, so the cache can never fail an analysis. Provider er
 never stored, so one bad minute of the provider is not remembered for a day.
 """
 
+import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from typing import Protocol
@@ -52,7 +53,12 @@ class CachedMarketData:
 
     async def get_asset(self, ref: AssetRef) -> Asset:
         return await self._cached(
-            "asset", ref, self._asset_ttl, _ASSET, lambda: self._inner.get_asset(ref)
+            "asset",
+            ref,
+            self._asset_ttl,
+            _ASSET,
+            lambda: self._inner.get_asset(ref),
+            per_hint=True,
         )
 
     async def get_price(self, ref: AssetRef) -> CurrentPrice:
@@ -71,7 +77,12 @@ class CachedMarketData:
 
     async def get_news(self, ref: AssetRef) -> list[NewsArticle]:
         return await self._cached(
-            "news", ref, self._news_ttl, _NEWS, lambda: self._inner.get_news(ref)
+            "news",
+            ref,
+            self._news_ttl,
+            _NEWS,
+            lambda: self._inner.get_news(ref),
+            per_hint=True,
         )
 
     async def _cached[T](
@@ -81,8 +92,16 @@ class CachedMarketData:
         ttl_seconds: int,
         adapter: TypeAdapter[T],
         fetch: Callable[[], Awaitable[T]],
+        *,
+        per_hint: bool = False,
     ) -> T:
         key = f"market:{kind}:{ref.type.value}:{ref.symbol}"
+        if per_hint and ref.name_hint:
+            # The asset name and the news filter may be derived from the name the AI read
+            # on one user's image. Keying on it keeps that value from being served to
+            # users whose image said something else.
+            digest = hashlib.sha256(ref.name_hint.strip().lower().encode()).hexdigest()[:16]
+            key = f"{key}:{digest}"
         hit = await self._read(key, adapter)
         if hit is not None:
             return hit[0]

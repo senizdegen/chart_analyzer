@@ -77,7 +77,9 @@ async def submit_analysis(
     if key is not None and len(key) > MAX_HEADER_VALUE_LENGTH:
         raise ApiError(ErrorCode.VALIDATION_ERROR, details="Idempotency-Key is too long")
 
-    # Read one byte past the limit: enough to know the file is too big without loading it all.
+    # Oversized requests are normally refused before the body is read (see the size guard
+    # in api/app.py). This covers what that guard cannot see: a body sent without a
+    # Content-Length. Reading one byte past the limit is enough to tell.
     data = await image.read(services.max_image_bytes + 1)
     if len(data) > services.max_image_bytes:
         raise ApiError(ErrorCode.IMAGE_TOO_LARGE)

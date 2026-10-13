@@ -115,6 +115,7 @@ class ErrorCode(StrEnum):
     QUOTA_EXCEEDED = "quota_exceeded"
     TOO_MANY_ACTIVE_ANALYSES = "too_many_active_analyses"
     ANALYSIS_NOT_FOUND = "analysis_not_found"
+    NOT_FOUND = "not_found"
     VALIDATION_ERROR = "validation_error"
     # analysis-level (reported through the analysis status and the event stream)
     UNCLEAR_CHART = "unclear_chart"

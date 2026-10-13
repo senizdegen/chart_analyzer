@@ -28,6 +28,7 @@ _STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.QUOTA_EXCEEDED: status.HTTP_429_TOO_MANY_REQUESTS,
     ErrorCode.TOO_MANY_ACTIVE_ANALYSES: status.HTTP_429_TOO_MANY_REQUESTS,
     ErrorCode.ANALYSIS_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    ErrorCode.NOT_FOUND: status.HTTP_404_NOT_FOUND,
 }
 
 
@@ -115,7 +116,7 @@ def install_error_handlers(app: FastAPI) -> None:
     async def _http_error(request: Request, error: StarletteHTTPException) -> JSONResponse:
         # Routing errors raised by the framework itself (unknown path, wrong method).
         code = (
-            ErrorCode.ANALYSIS_NOT_FOUND
+            ErrorCode.NOT_FOUND
             if error.status_code == status.HTTP_404_NOT_FOUND
             else ErrorCode.VALIDATION_ERROR
         )

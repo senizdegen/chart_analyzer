@@ -9,9 +9,10 @@ import structlog
 from fastapi import FastAPI, Request, Response
 
 from chart_analyzer.api.dependencies import ApiServices
-from chart_analyzer.api.errors import install_error_handlers
-from chart_analyzer.api.routers import analyses, quota
+from chart_analyzer.api.errors import error_response, install_error_handlers
+from chart_analyzer.api.routers import analyses, demo, quota
 from chart_analyzer.api.schemas import API_PREFIX
+from chart_analyzer.domain.enums import ErrorCode
 from chart_analyzer.logs import bind_context, clear_context
 
 log = structlog.get_logger(__name__)
@@ -63,15 +64,37 @@ def create_app(services: ApiServices | None = None) -> FastAPI:
     if services is not None:
         app.state.services = services
     install_error_handlers(app)
-    app.middleware("http")(_request_context)
+    app.middleware("http")(_upload_size_guard)
+    app.middleware("http")(_request_context)  # added last, so it runs first
     app.include_router(analyses.router, prefix=API_PREFIX)
     app.include_router(quota.router, prefix=API_PREFIX)
+    app.include_router(demo.router)
 
     @app.get("/health", tags=["service"], summary="Liveness probe")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
     return app
+
+
+# Room for the multipart envelope and the small form fields around the image itself.
+MULTIPART_OVERHEAD_BYTES = 64 * 1024
+
+
+async def _upload_size_guard(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Refuse an oversized upload from its Content-Length, before the body is received.
+
+    FastAPI parses the whole multipart body to a temporary file before the endpoint runs,
+    so a check inside the endpoint would come only after gigabytes had been accepted.
+    """
+    if request.method == "POST":
+        declared = request.headers.get("content-length", "")
+        limit = request.app.state.services.max_image_bytes + MULTIPART_OVERHEAD_BYTES
+        if declared.isdigit() and int(declared) > limit:
+            return error_response(request, ErrorCode.IMAGE_TOO_LARGE)
+    return await call_next(request)
 
 
 async def _request_context(

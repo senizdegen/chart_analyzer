@@ -1,13 +1,15 @@
 """Retry policy of the worker and the outbox relay."""
 
-from datetime import timedelta
-from uuid import uuid4
+from datetime import datetime, timedelta
+from uuid import UUID, uuid4
 
 import pytest
 
 from chart_analyzer.application.handle_task import Action, RetryPolicy, TaskHandler
+from chart_analyzer.application.ports.repositories import ClaimResult
 from chart_analyzer.application.process_analysis import ProcessAnalysis
 from chart_analyzer.application.relay_outbox import RelayOutbox
+from chart_analyzer.domain.analysis import Analysis
 from chart_analyzer.domain.enums import AnalysisStatus, ErrorCode
 from chart_analyzer.domain.errors import TransientFailure
 from tests.fakes import (
@@ -15,6 +17,7 @@ from tests.fakes import (
     FakeChartAI,
     FakeMarketData,
     FixedClock,
+    InMemoryAnalysisRepository,
     InMemoryDatabase,
     InMemoryImageStorage,
     InMemoryUnitOfWork,
@@ -25,6 +28,39 @@ from tests.fakes import (
 
 POLICY = RetryPolicy(delays=(5, 30, 120), busy_delay=30)
 LEASE = timedelta(seconds=180)
+DEADLINE = timedelta(seconds=150)
+
+
+class UnreliableAnalysisRepository(InMemoryAnalysisRepository):
+    """Raises a connection error from the operations named in ``broken``."""
+
+    def __init__(self, db: InMemoryDatabase, broken: set[str]) -> None:
+        super().__init__(db)
+        self._broken = broken
+
+    def _check(self, operation: str) -> None:
+        if operation in self._broken:
+            raise ConnectionError(f"database is down ({operation})")
+
+    async def claim(self, analysis_id: UUID, *, now: datetime, lease: timedelta) -> ClaimResult:
+        self._check("claim")
+        return await super().claim(analysis_id, now=now, lease=lease)
+
+    async def get(self, analysis_id: UUID) -> Analysis | None:
+        self._check("get")
+        return await super().get(analysis_id)
+
+    async def fail(
+        self, analysis_id: UUID, code: ErrorCode, *, now: datetime, attempt: int | None = None
+    ) -> bool:
+        self._check("fail")
+        return await super().fail(analysis_id, code, now=now, attempt=attempt)
+
+
+class UnreliableUnitOfWork(InMemoryUnitOfWork):
+    def __init__(self, db: InMemoryDatabase, broken: set[str]) -> None:
+        super().__init__(db)
+        self.analyses = UnreliableAnalysisRepository(db, broken)
 
 
 class Harness:
@@ -33,18 +69,23 @@ class Harness:
         self.ai = FakeChartAI()
         self.market = FakeMarketData()
         self.progress = RecordingProgress()
+        self.broken: set[str] = set()  # repository operations that currently fail
+        storage = InMemoryImageStorage()
         process = ProcessAnalysis(
-            lambda: InMemoryUnitOfWork(self.db),
-            InMemoryImageStorage(),
+            lambda: UnreliableUnitOfWork(self.db, self.broken),
+            storage,
             self.ai,
             self.market,
             self.progress,
             FixedClock(),
             lease=LEASE,
+            deadline=DEADLINE,
             max_news=3,
         )
         self.handler = TaskHandler(process, POLICY)
-        self.analysis_id = self.db.seed(make_analysis(uuid4())).id
+        analysis = self.db.seed(make_analysis(uuid4()))
+        storage.put(analysis.image)
+        self.analysis_id = analysis.id
 
 
 @pytest.fixture
@@ -92,6 +133,68 @@ class TestTaskHandler:
         assert analysis.status is AnalysisStatus.FAILED
         assert analysis.error_code is ErrorCode.MARKET_DATA_UNAVAILABLE
         assert h.progress.types()[-1] == "failed"
+
+    async def test_last_attempt_dead_letters_even_if_the_failure_cannot_be_recorded(
+        self, h: Harness
+    ) -> None:
+        h.market.error = TransientFailure(ErrorCode.MARKET_DATA_UNAVAILABLE)
+        h.broken.add("fail")
+
+        disposition = await h.handler.handle(h.analysis_id, attempt=4)
+
+        assert disposition.action is Action.DEAD_LETTER
+        # left active for the stale-analysis sweep
+        assert h.db.analysis(h.analysis_id).status is AnalysisStatus.QUEUED
+
+    @pytest.mark.parametrize(("attempt", "delay"), [(1, 5), (2, 30), (3, 120)])
+    async def test_infrastructure_error_is_retried_like_a_transient_failure(
+        self, h: Harness, attempt: int, delay: int
+    ) -> None:
+        h.broken.add("claim")  # not a domain error: the database broke around the pipeline
+
+        disposition = await h.handler.handle(h.analysis_id, attempt=attempt)
+
+        assert disposition.action is Action.RETRY
+        assert disposition.delay_seconds == delay
+        assert disposition.next_attempt == attempt + 1
+        assert h.db.analysis(h.analysis_id).status is AnalysisStatus.QUEUED
+        assert h.ai.recognize_calls == 0
+
+    async def test_retry_after_an_infrastructure_error_completes_the_analysis(
+        self, h: Harness
+    ) -> None:
+        h.broken.add("claim")
+        first = await h.handler.handle(h.analysis_id, attempt=1)
+        h.broken.clear()
+
+        second = await h.handler.handle(h.analysis_id, attempt=first.next_attempt)
+
+        assert second.action is Action.ACK
+        assert h.db.analysis(h.analysis_id).status is AnalysisStatus.COMPLETED
+
+    async def test_infrastructure_error_on_the_last_attempt_fails_the_analysis(
+        self, h: Harness
+    ) -> None:
+        h.broken.add("claim")
+
+        disposition = await h.handler.handle(h.analysis_id, attempt=4)
+
+        analysis = h.db.analysis(h.analysis_id)
+        assert disposition.action is Action.DEAD_LETTER
+        assert analysis.status is AnalysisStatus.FAILED
+        assert analysis.error_code is ErrorCode.INTERNAL_ERROR
+        assert h.progress.types() == ["failed"]
+
+    async def test_infrastructure_error_while_giving_up_still_dead_letters(
+        self, h: Harness
+    ) -> None:
+        h.broken.update({"claim", "get"})  # the database is gone for good
+
+        disposition = await h.handler.handle(h.analysis_id, attempt=4)
+
+        assert disposition.action is Action.DEAD_LETTER
+        assert h.db.analysis(h.analysis_id).status is AnalysisStatus.QUEUED
+        assert h.progress.events == []
 
     async def test_busy_analysis_is_looked_at_later_without_using_an_attempt(
         self, h: Harness

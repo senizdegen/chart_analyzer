@@ -57,8 +57,11 @@ class ProcessAnalysis:
         clock: Clock,
         *,
         lease: timedelta,
+        deadline: timedelta,
         max_news: int,
     ) -> None:
+        if deadline >= lease:
+            raise ValueError("the pipeline deadline must be shorter than the lease")
         self._uow_factory = uow_factory
         self._storage = storage
         self._ai = ai
@@ -66,6 +69,7 @@ class ProcessAnalysis:
         self._progress = progress
         self._clock = clock
         self._lease = lease
+        self._deadline = deadline
         self._max_news = max_news
 
     async def run(self, analysis_id: UUID) -> ProcessOutcome:
@@ -83,20 +87,27 @@ class ProcessAnalysis:
         analysis = claim.analysis
         log.info("analysis.started", attempt=analysis.attempts)
         try:
-            await self._run_pipeline(analysis)
+            # The deadline is shorter than the lease, so this worker stops before another
+            # one may take the analysis over.
+            async with asyncio.timeout(self._deadline.total_seconds()):
+                await self._run_pipeline(analysis)
         except AnalysisFailure as failure:
             log.info("analysis.failed", code=failure.code.value, detail=failure.detail)
-            await self._fail(analysis, failure.code)
+            await self._fail(analysis, failure.code, attempt=analysis.attempts)
             return ProcessOutcome.FAILED
         except TransientFailure as failure:
             log.warning(
                 "analysis.transient_failure", code=failure.code.value, detail=failure.detail
             )
-            await self._release(analysis_id)
+            await self._release(analysis)
             raise
+        except TimeoutError as error:
+            log.warning("analysis.deadline_exceeded", seconds=self._deadline.total_seconds())
+            await self._release(analysis)
+            raise TransientFailure(ErrorCode.INTERNAL_ERROR, "deadline exceeded") from error
         except Exception as error:
             log.exception("analysis.unexpected_error")
-            await self._release(analysis_id)
+            await self._release(analysis)
             raise TransientFailure(ErrorCode.INTERNAL_ERROR, repr(error)) from error
         return ProcessOutcome.COMPLETED
 
@@ -107,7 +118,7 @@ class ProcessAnalysis:
         if analysis is None:
             return
         log.error("analysis.gave_up", code=code.value)
-        await self._fail(analysis, code)
+        await self._fail(analysis, code, attempt=None)
 
     # --- pipeline -----------------------------------------------------------------------------
 
@@ -139,21 +150,24 @@ class ProcessAnalysis:
                 analysis.language, snapshot, answer.value, max_news=self._max_news
             )
         except TransientFailure:
-            # The rejected answer was still paid for; keep the spend visible.
-            async with self._uow_factory() as uow:
-                await uow.analyses.add_tokens(analysis.id, answer.tokens)
-                await uow.commit()
+            # A rejected answer is not charged to the analysis: only the attempt that
+            # succeeds counts, which keeps the spend within the quota reservation.
+            log.warning("analysis.answer_rejected", tokens=answer.tokens)
             raise
 
         async with self._uow_factory() as uow:
             completed = await uow.analyses.complete(
-                analysis.id, result, tokens=answer.tokens, now=self._clock.now()
+                analysis.id,
+                result,
+                tokens=answer.tokens,
+                now=self._clock.now(),
+                attempt=analysis.attempts,
             )
             finished = await uow.analyses.get(analysis.id)
             await uow.commit()
 
         if not completed or finished is None:
-            log.warning("analysis.completion_skipped", reason="no longer in progress")
+            log.warning("analysis.completion_skipped", reason="the claim was lost")
             return
         log.info("analysis.completed", symbol=symbol, tokens_used=finished.tokens_used)
         await self._publish(analysis.id, final_event(finished))
@@ -183,17 +197,19 @@ class ProcessAnalysis:
             await uow.commit()
         await self._publish(analysis_id, stage_event(stage))
 
-    async def _fail(self, analysis: Analysis, code: ErrorCode) -> None:
+    async def _fail(self, analysis: Analysis, code: ErrorCode, *, attempt: int | None) -> None:
         async with self._uow_factory() as uow:
-            failed = await uow.analyses.fail(analysis.id, code, now=self._clock.now())
+            failed = await uow.analyses.fail(
+                analysis.id, code, now=self._clock.now(), attempt=attempt
+            )
             current = await uow.analyses.get(analysis.id)
             await uow.commit()
         if failed and current is not None:
             await self._publish(analysis.id, final_event(current))
 
-    async def _release(self, analysis_id: UUID) -> None:
+    async def _release(self, analysis: Analysis) -> None:
         async with self._uow_factory() as uow:
-            await uow.analyses.release(analysis_id)
+            await uow.analyses.release(analysis.id, attempt=analysis.attempts)
             await uow.commit()
 
     async def _publish(self, analysis_id: UUID, event: ProgressEvent) -> None:

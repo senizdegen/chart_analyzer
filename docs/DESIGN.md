@@ -20,7 +20,8 @@ How the service is built and why. Diagram: [architecture.png](architecture.png).
 
 ```
 src/chart_analyzer/
-  domain/          pure rules and value objects; no I/O, no framework
+  domain/          pure rules and value objects; no I/O (Pydantic is the only library it uses,
+                   because its value objects are validated at every boundary they cross)
   application/     use cases + ports (interfaces in application/ports)
   infrastructure/  adapters implementing the ports (Postgres, RabbitMQ, Redis, Finnhub, OpenAI, disk)
   api/             FastAPI: routers, schemas, error mapping, SSE
@@ -39,14 +40,18 @@ in-memory fakes in `tests/fakes.py`.
 | Execution | Queue + separate worker, not inside the HTTP request | An analysis takes 8–20 s; it must survive a dropped connection, an API restart and bursts of load |
 | API → queue | Transactional outbox | A stored analysis can never be left without a task: both rows commit together |
 | Delivery | At-least-once + idempotent worker | `claim` is one atomic `UPDATE`; duplicates of a finished analysis are dropped |
+| Ownership | Lease + fencing + deadline | A claim holds the analysis for `ANALYSIS_LEASE_SECONDS`. One attempt is cut off at `ANALYSIS_DEADLINE_SECONDS`, which is shorter, so a worker stops before it can be taken over. `complete`, `release` and the worker's `fail` also carry the claim number (`attempts`) and match no row once another worker has claimed |
+| Lost tasks | Sweep of stale analyses | An analysis that stayed active and untouched for `ANALYSIS_STALE_AFTER_SECONDS` is failed by the worker's sweep, so a task that was lost or dead-lettered during a database outage cannot hold a quota reservation forever |
+| Worker errors | Every failure of the handler is retried | A database error around the pipeline goes through the same delay queues as a provider error instead of straight to the DLQ |
 | Checkpoints | Recognition and market snapshot saved as JSONB after each step | A retry resumes where it stopped instead of paying for the same AI call twice |
 | Retries | Delay queues (5 s / 30 s / 120 s), then DLQ | Transient provider errors heal by themselves; a poisoned task must not loop forever |
 | Order of steps | Cheap recognition → market data → expensive analysis | If the ticker is unreadable or Finnhub is down we stop before the expensive call |
 | Result | Complete or failed, never partial | Part 2 requires the market blocks to be populated with real data |
 | Quota | Count only successful analyses; reserve an upper bound per active analysis | "Up to 500,000" is a hard cap, yet the cost is known only after the AI answers |
+| What an analysis is charged | Recognition + the one analysis call that succeeded | AI answers rejected by validation are retried at our expense: their tokens are logged, not charged. That keeps the charge under the reservation (bounded image size, news count, summary length and output tokens) |
 | Quota concurrency | `pg_advisory_xact_lock` per user around check + insert | There is no per-user row to `SELECT … FOR UPDATE`; the reservation is derived from statuses and cannot leak |
 | Localization | Enums as stable codes; AI free text and error messages in the user's language | The client keys colours/icons on codes and translates labels itself |
-| Market data | Finnhub behind `MarketDataProvider`, cached in Redis | Free tier allows 60 requests/minute for all users together |
+| Market data | Finnhub behind `MarketDataProvider`, cached in Redis | Free tier allows 60 requests/minute for all users together. Values derived from the asset name the AI read on an image (crypto name, crypto news filter) are cached per name, so one user's image cannot change what another user sees |
 | Images | Files on a volume behind `ImageStorage` | Swappable for S3 without touching use cases |
 | Users | No table; `user_id` is an opaque string from `x-user-id` | Users live in another service; the assignment says auth is already handled |
 
@@ -122,6 +127,17 @@ and a final `failed` event, with the message in the analysis' language.
   paid for again on retry. The extra spend is not charged to the user's quota.
 - A task redelivered right after a worker crash waits for the lease
   (`ANALYSIS_LEASE_SECONDS`) before another worker takes over.
+- Checkpoint and stage writes are guarded by status only, not by the claim number. With
+  the deadline shorter than the lease two workers should never overlap; if they did (a
+  stalled process), the late worker could still overwrite a checkpoint with an equivalent
+  one, but it could not finish, fail or re-queue the analysis.
+- The stale sweep judges by time. Under a backlog longer than
+  `ANALYSIS_STALE_AFTER_SECONDS` a queued analysis would be failed before a worker
+  reached it; the limit has to be raised together with the expected queue time.
+- The upload size is refused early only when the client sends `Content-Length`. A chunked
+  body is cut off after it was received; a reverse proxy limit belongs in front.
+- An image file can be orphaned if the process dies between storing it and committing
+  the analysis; nothing sweeps such files yet.
 - Rejected uploads (not a chart) cost recognition tokens that the quota does not count,
   per the assignment's wording "successful analyses". In production this needs a
   separate attempts limit; the spend is stored per analysis to make that easy.

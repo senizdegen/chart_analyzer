@@ -26,6 +26,18 @@ _ACTIVE = (AnalysisStatus.QUEUED.value, AnalysisStatus.PROCESSING.value)
 _TERMINAL = (AnalysisStatus.COMPLETED.value, AnalysisStatus.FAILED.value)
 
 
+def _owned_by(attempt: int) -> tuple[Any, Any]:
+    """Fencing: still in progress, and still under the claim numbered ``attempt``.
+
+    Every claim increments ``attempts``, so a worker whose lease expired and was taken
+    over carries a stale number and its late writes match no row.
+    """
+    return (
+        AnalysisRow.status == AnalysisStatus.PROCESSING.value,
+        AnalysisRow.attempts == attempt,
+    )
+
+
 def _to_analysis(row: Row[Any]) -> Analysis:
     return Analysis(
         id=row.id,
@@ -173,48 +185,75 @@ class SqlAlchemyAnalysisRepository:
     async def save_market_snapshot(self, analysis_id: UUID, snapshot: MarketSnapshot) -> None:
         await self._update(analysis_id, market_snapshot=snapshot.model_dump(mode="json"))
 
-    async def add_tokens(self, analysis_id: UUID, tokens: int) -> None:
-        await self._update(analysis_id, tokens_used=AnalysisRow.tokens_used + tokens)
-
     async def complete(
-        self, analysis_id: UUID, result: AnalysisResult, *, tokens: int, now: datetime
+        self,
+        analysis_id: UUID,
+        result: AnalysisResult,
+        *,
+        tokens: int,
+        now: datetime,
+        attempt: int,
     ) -> bool:
         return await self._finish(
             analysis_id,
-            AnalysisRow.status == AnalysisStatus.PROCESSING.value,
+            and_(*_owned_by(attempt)),
             status=AnalysisStatus.COMPLETED.value,
             result=result.model_dump(mode="json"),
             tokens_used=AnalysisRow.tokens_used + tokens,
             completed_at=now,
         )
 
-    async def fail(self, analysis_id: UUID, code: ErrorCode, *, now: datetime) -> bool:
+    async def fail(
+        self, analysis_id: UUID, code: ErrorCode, *, now: datetime, attempt: int | None = None
+    ) -> bool:
+        precondition = (
+            AnalysisRow.status.in_(_ACTIVE) if attempt is None else and_(*_owned_by(attempt))
+        )
         return await self._finish(
             analysis_id,
-            AnalysisRow.status.in_(_ACTIVE),
+            precondition,
             status=AnalysisStatus.FAILED.value,
             error_code=code.value,
             completed_at=now,
         )
 
-    async def release(self, analysis_id: UUID) -> None:
+    async def release(self, analysis_id: UUID, *, attempt: int) -> None:
         await self._session.execute(
             update(AnalysisRow)
-            .where(
-                AnalysisRow.id == analysis_id,
-                AnalysisRow.status == AnalysisStatus.PROCESSING.value,
-            )
+            .where(AnalysisRow.id == analysis_id, *_owned_by(attempt))
             .values(status=AnalysisStatus.QUEUED.value, locked_at=None, updated_at=func.now())
         )
+
+    async def fail_stale(
+        self, *, inactive_since: datetime, code: ErrorCode, now: datetime
+    ) -> Sequence[UUID]:
+        result = await self._session.execute(
+            update(AnalysisRow)
+            .where(AnalysisRow.status.in_(_ACTIVE), AnalysisRow.updated_at < inactive_since)
+            .values(
+                status=AnalysisStatus.FAILED.value,
+                stage=Stage.DONE.value,
+                error_code=code.value,
+                completed_at=now,
+                locked_at=None,
+                updated_at=func.now(),
+            )
+            .returning(AnalysisRow.id)
+        )
+        return list(result.scalars())
 
     async def _one_or_none(self, statement: Any) -> Analysis | None:
         row = (await self._session.execute(statement)).one_or_none()
         return None if row is None else _to_analysis(row)
 
     async def _update(self, analysis_id: UUID, **values: Any) -> None:
+        """Progress and checkpoint writes; they never touch a finished analysis."""
         await self._session.execute(
             update(AnalysisRow)
-            .where(AnalysisRow.id == analysis_id)
+            .where(
+                AnalysisRow.id == analysis_id,
+                AnalysisRow.status == AnalysisStatus.PROCESSING.value,
+            )
             .values(**values, updated_at=func.now())
         )
 

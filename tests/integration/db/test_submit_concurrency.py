@@ -21,7 +21,7 @@ from tests.integration.db.conftest import UowFactory, add_completed
 
 pytestmark = pytest.mark.integration
 
-# max_active_analyses is out of the way, so only the daily limit can reject
+# max_active_analyses is out of the way, so only the token budget can reject
 POLICY = QuotaPolicy(daily_limit=500_000, reservation_tokens=20_000, max_active_analyses=50)
 
 
@@ -54,7 +54,9 @@ async def test_concurrent_submissions_cannot_exceed_the_daily_limit(
     rejected = [outcome for outcome in outcomes if isinstance(outcome, QuotaExceeded)]
     assert len(admitted) == 2
     assert len(rejected) == 28
-    assert {error.code for error in rejected} == {ErrorCode.QUOTA_EXCEEDED}
+    # 460,000 spent would still admit one analysis: what blocks the rest is the two
+    # reservations, so they are told to wait for those, not for tomorrow.
+    assert {error.code for error in rejected} == {ErrorCode.TOO_MANY_ACTIVE_ANALYSES}
     assert all(result.created for result in admitted)
 
     async with uow_factory() as uow:
@@ -65,6 +67,24 @@ async def test_concurrent_submissions_cannot_exceed_the_daily_limit(
     assert len(messages) == 2
     # images of the rejected requests were removed again
     assert set(storage.files) == {result.analysis.image.key for result in admitted}
+
+
+async def test_concurrent_submissions_after_the_limit_is_spent_are_all_rejected(
+    uow_factory: UowFactory,
+) -> None:
+    await add_completed(uow_factory, tokens=480_001)  # not even one reservation fits
+    storage = InMemoryImageStorage()
+    submit = build_use_case(uow_factory, storage)
+
+    outcomes = await asyncio.gather(
+        *(submit.execute(command()) for _ in range(10)), return_exceptions=True
+    )
+
+    assert all(isinstance(outcome, QuotaExceeded) for outcome in outcomes)
+    assert {outcome.code for outcome in outcomes if isinstance(outcome, QuotaExceeded)} == {
+        ErrorCode.QUOTA_EXCEEDED
+    }
+    assert not storage.files
 
 
 async def test_concurrent_submissions_with_one_idempotency_key_create_one_analysis(

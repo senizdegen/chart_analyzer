@@ -119,7 +119,9 @@ async def add_completed(
 ) -> Analysis:
     analysis = await add_processing(uow_factory, user_id=user_id, at=at)
     async with uow_factory() as uow:
-        assert await uow.analyses.complete(analysis.id, make_result(), tokens=tokens, now=at)
+        assert await uow.analyses.complete(
+            analysis.id, make_result(), tokens=tokens, now=at, attempt=analysis.attempts
+        )
         await uow.commit()
     return await load(uow_factory, analysis.id)
 
@@ -129,3 +131,13 @@ async def load(uow_factory: UowFactory, analysis_id: UUID) -> Analysis:
         analysis = await uow.analyses.get(analysis_id)
     assert analysis is not None
     return analysis
+
+
+async def take_over(uow_factory: UowFactory, analysis: Analysis, *, at: datetime) -> Analysis:
+    """Another worker claims a processing analysis whose lease has expired by ``at``."""
+    async with uow_factory() as uow:
+        claimed = (await uow.analyses.claim(analysis.id, now=at, lease=LEASE)).analysis
+        await uow.commit()
+    assert claimed is not None
+    assert claimed.attempts == analysis.attempts + 1
+    return claimed

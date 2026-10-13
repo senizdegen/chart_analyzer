@@ -11,6 +11,7 @@ from uuid import UUID
 import structlog
 
 from chart_analyzer.application.process_analysis import ProcessAnalysis, ProcessOutcome
+from chart_analyzer.domain.enums import ErrorCode
 from chart_analyzer.domain.errors import TransientFailure
 
 log = structlog.get_logger(__name__)
@@ -50,12 +51,13 @@ class TaskHandler:
         try:
             outcome = await self._process.run(analysis_id)
         except TransientFailure as failure:
-            if attempt >= self._policy.max_attempts:
-                await self._process.give_up(analysis_id, failure.code)
-                return Disposition(Action.DEAD_LETTER)
-            delay = self._policy.delays[attempt - 1]
-            log.info("task.retry_scheduled", attempt=attempt, delay_seconds=delay)
-            return Disposition(Action.RETRY, delay_seconds=delay, next_attempt=attempt + 1)
+            return await self._retry_or_give_up(analysis_id, attempt, failure.code)
+        except Exception:
+            # Not a domain failure: the database or another dependency broke around the
+            # pipeline (for example while claiming). Dead-lettering here would strand the
+            # analysis in an active status, so it is retried like any transient failure.
+            log.exception("task.infrastructure_error")
+            return await self._retry_or_give_up(analysis_id, attempt, ErrorCode.INTERNAL_ERROR)
 
         if outcome is ProcessOutcome.BUSY:
             # Another worker holds a fresh lease. If it died, the lease expires and a later
@@ -64,3 +66,17 @@ class TaskHandler:
                 Action.RETRY, delay_seconds=self._policy.busy_delay, next_attempt=attempt
             )
         return Disposition(Action.ACK)
+
+    async def _retry_or_give_up(
+        self, analysis_id: UUID, attempt: int, code: ErrorCode
+    ) -> Disposition:
+        if attempt < self._policy.max_attempts:
+            delay = self._policy.delays[attempt - 1]
+            log.info("task.retry_scheduled", attempt=attempt, delay_seconds=delay)
+            return Disposition(Action.RETRY, delay_seconds=delay, next_attempt=attempt + 1)
+        try:
+            await self._process.give_up(analysis_id, code)
+        except Exception:
+            # The failure could not be recorded; the stale-analysis sweep will do it.
+            log.exception("task.give_up_failed")
+        return Disposition(Action.DEAD_LETTER)

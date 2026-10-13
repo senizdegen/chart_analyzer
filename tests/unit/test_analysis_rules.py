@@ -9,6 +9,8 @@ from chart_analyzer.domain.analysis_rules import (
     build_analyst_review,
     normalize_symbol,
     resolve_recognized_asset,
+    validate_insights,
+    validate_price_scale,
     validate_trading_signals,
 )
 from chart_analyzer.domain.enums import (
@@ -20,8 +22,8 @@ from chart_analyzer.domain.enums import (
     Position,
 )
 from chart_analyzer.domain.errors import AnalysisFailure, TransientFailure
-from chart_analyzer.domain.models import NewsAssessment
-from tests.fakes import make_insights, make_recognition, make_signals, make_snapshot
+from chart_analyzer.domain.models import ChartInsights, CurrentPrice, NewsAssessment
+from tests.fakes import NOW, make_insights, make_recognition, make_signals, make_snapshot
 
 
 class TestNormalizeSymbol:
@@ -46,6 +48,39 @@ class TestNormalizeSymbol:
 
     def test_stock_ticker_ending_in_usd_is_not_truncated(self) -> None:
         assert normalize_symbol("MUSD", AssetType.STOCK) == "MUSD"
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("BTCUSDTPERP", "BTC"),
+            ("BINANCE:BTCUSDT.P", "BTC"),
+            ("BTCUSDT.P", "BTC"),
+            ("ethusd.p", "ETH"),
+            ("BTC-PERP", "BTC"),
+            ("BTCPERP", "BTC"),
+            ("BYBIT:SOLUSDC.P", "SOL"),
+        ],
+    )
+    def test_perpetual_futures_labels_reduce_to_the_base_ticker(
+        self, raw: str, expected: str
+    ) -> None:
+        assert normalize_symbol(raw, AssetType.CRYPTO) == expected
+
+    @pytest.mark.parametrize(
+        ("raw", "asset_type", "expected"),
+        [
+            ("PERP", AssetType.CRYPTO, "PERP"),  # the Perpetual Protocol coin itself
+            ("PERPUSDT", AssetType.CRYPTO, "PERP"),
+            ("XRP", AssetType.CRYPTO, "XRP"),
+            ("XRPUSDT", AssetType.CRYPTO, "XRP"),
+            ("BRK.P", AssetType.STOCK, "BRK.P"),  # a stock share class is not a marker
+            ("PERP", AssetType.STOCK, "PERP"),
+        ],
+    )
+    def test_perpetual_markers_are_not_cut_out_of_other_symbols(
+        self, raw: str, asset_type: AssetType, expected: str
+    ) -> None:
+        assert normalize_symbol(raw, asset_type) == expected
 
 
 class TestResolveRecognizedAsset:
@@ -220,3 +255,97 @@ class TestAssembleResult:
     def test_empty_summary_is_rejected(self) -> None:
         with pytest.raises(TransientFailure):
             assemble_result(Language.EN, make_snapshot(), make_insights(summary="  "), max_news=3)
+
+
+def _with_explanation(insight: str, text: str) -> ChartInsights:
+    insights = make_insights()
+    blanked = getattr(insights.key_insights, insight).model_copy(update={"explanation": text})
+    key_insights = insights.key_insights.model_copy(update={insight: blanked})
+    return insights.model_copy(update={"key_insights": key_insights})
+
+
+class TestValidateInsights:
+    def test_complete_answer_passes(self) -> None:
+        validate_insights(make_insights())
+
+    @pytest.mark.parametrize("insight", ["trend", "volatility", "market_sentiment"])
+    @pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
+    def test_blank_explanation_is_rejected_as_retryable(self, insight: str, blank: str) -> None:
+        with pytest.raises(TransientFailure) as error:
+            validate_insights(_with_explanation(insight, blank))
+        assert error.value.code is ErrorCode.INVALID_AI_RESPONSE
+
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_blank_rationale_is_rejected_as_retryable(self, blank: str) -> None:
+        with pytest.raises(TransientFailure) as error:
+            validate_insights(make_insights(trading_signals=make_signals(rationale=blank)))
+        assert error.value.code is ErrorCode.INVALID_AI_RESPONSE
+
+    def test_blank_texts_abort_assembly(self) -> None:
+        for insights in (
+            _with_explanation("volatility", " "),
+            make_insights(trading_signals=make_signals(rationale=" ")),
+        ):
+            with pytest.raises(TransientFailure):
+                assemble_result(Language.EN, make_snapshot(), insights, max_news=3)
+
+
+def _scaled_signals(factor: float) -> object:
+    """The sample long setup (consistent in itself) on another price scale."""
+    return make_signals(
+        start_level=340.0 * factor,
+        safety_stop=323.0 * factor,
+        projected_exit_1=365.0 * factor,
+        projected_exit_2=380.0 * factor,
+        support_level=325.0 * factor,
+        resistance_level=366.0 * factor,
+    )
+
+
+class TestPriceScale:
+    """Levels must be on the scale of the real price (340.97 in the sample snapshot)."""
+
+    @pytest.mark.parametrize("factor", [100.0, 0.01, 10.0, 0.1])
+    def test_levels_far_from_the_current_price_abort_assembly(self, factor: float) -> None:
+        insights = make_insights(trading_signals=_scaled_signals(factor))
+        validate_insights(insights)  # nothing else is wrong with the answer
+
+        with pytest.raises(TransientFailure) as error:
+            assemble_result(Language.EN, make_snapshot(), insights, max_news=3)
+
+        assert error.value.code is ErrorCode.INVALID_AI_RESPONSE
+
+    @pytest.mark.parametrize("factor", [1.0, 0.5, 2.0])
+    def test_levels_within_the_band_are_accepted(self, factor: float) -> None:
+        # an old chart: the price has halved or doubled since
+        insights = make_insights(trading_signals=_scaled_signals(factor))
+
+        result = assemble_result(Language.EN, make_snapshot(), insights, max_news=3)
+
+        assert result.trading_signals == insights.trading_signals
+
+    def test_the_band_follows_the_price_of_the_asset(self) -> None:
+        insights = make_insights(trading_signals=_scaled_signals(100.0))
+        snapshot = make_snapshot(price=CurrentPrice(price=34_097.0, currency="USD", as_of=NOW))
+
+        assert assemble_result(Language.EN, snapshot, insights, max_news=3).trading_signals
+
+    def test_band_is_five_times_either_way_inclusive(self) -> None:
+        within = make_signals(
+            start_level=100.0, safety_stop=20.0, projected_exit_1=400.0, projected_exit_2=500.0
+        )
+        validate_price_scale(within, 100.0)
+
+        for name, value in (("safety_stop", 19.99), ("projected_exit_2", 500.01)):
+            with pytest.raises(TransientFailure) as error:
+                validate_price_scale(within.model_copy(update={name: value}), 100.0)
+            assert error.value.code is ErrorCode.INVALID_AI_RESPONSE
+
+    @pytest.mark.parametrize(
+        "name", ["start_level", "safety_stop", "projected_exit_1", "projected_exit_2"]
+    )
+    def test_every_level_is_checked(self, name: str) -> None:
+        signals = make_signals().model_copy(update={name: 5_000.0})
+
+        with pytest.raises(TransientFailure):
+            validate_price_scale(signals, 340.97)

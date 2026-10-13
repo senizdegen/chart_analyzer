@@ -49,6 +49,9 @@ class AnalysisRepository(Protocol):
         """Atomically take a queued analysis, or one whose lease expired (its worker died)."""
         ...
 
+    # Progress and checkpoints are written only while the analysis is in progress, so a
+    # late write can never alter a finished analysis.
+
     async def set_stage(self, analysis_id: UUID, stage: Stage) -> None: ...
 
     async def save_recognition(
@@ -61,22 +64,43 @@ class AnalysisRepository(Protocol):
         """Checkpoint of step 2."""
         ...
 
-    async def add_tokens(self, analysis_id: UUID, tokens: int) -> None:
-        """Record spend of an AI call whose answer was rejected."""
-        ...
-
     async def complete(
-        self, analysis_id: UUID, result: AnalysisResult, *, tokens: int, now: datetime
+        self,
+        analysis_id: UUID,
+        result: AnalysisResult,
+        *,
+        tokens: int,
+        now: datetime,
+        attempt: int,
     ) -> bool:
-        """Finish successfully. ``False`` if the analysis was no longer in progress."""
+        """Finish successfully.
+
+        ``attempt`` is the claim that did the work (``Analysis.attempts`` right after
+        ``claim``). ``False`` when that claim no longer owns the analysis: it was finished
+        meanwhile, or another worker took it over after the lease expired.
+        """
         ...
 
-    async def fail(self, analysis_id: UUID, code: ErrorCode, *, now: datetime) -> bool:
-        """Finish unsuccessfully. ``False`` if the analysis was already finished."""
+    async def fail(
+        self, analysis_id: UUID, code: ErrorCode, *, now: datetime, attempt: int | None = None
+    ) -> bool:
+        """Finish unsuccessfully. ``False`` if the analysis was already finished, or if
+        ``attempt`` is given and that claim no longer owns it."""
         ...
 
-    async def release(self, analysis_id: UUID) -> None:
-        """Give a claimed analysis back to the queue before a retry."""
+    async def release(self, analysis_id: UUID, *, attempt: int) -> None:
+        """Give a claimed analysis back to the queue before a retry; a no-op when the
+        claim ``attempt`` no longer owns it."""
+        ...
+
+    async def fail_stale(
+        self, *, inactive_since: datetime, code: ErrorCode, now: datetime
+    ) -> Sequence[UUID]:
+        """Fail every active analysis nothing has touched since ``inactive_since``.
+
+        Safety net for analyses whose task was lost or dead-lettered without the failure
+        being recorded: they must not hold a quota reservation forever.
+        """
         ...
 
 

@@ -19,6 +19,7 @@ from chart_analyzer.application.handle_task import RetryPolicy, TaskHandler
 from chart_analyzer.application.ports.unit_of_work import UnitOfWorkFactory
 from chart_analyzer.application.process_analysis import ProcessAnalysis
 from chart_analyzer.application.queries import AnalysisQueries
+from chart_analyzer.application.reap_stale import ReapStaleAnalyses
 from chart_analyzer.application.relay_outbox import RelayOutbox
 from chart_analyzer.application.submit_analysis import SubmitAnalysis
 from chart_analyzer.config import Settings
@@ -45,6 +46,7 @@ class Worker:
 
     consumer: TaskConsumer
     relay: RelayOutbox
+    reaper: ReapStaleAnalyses
 
 
 def quota_policy(settings: Settings) -> QuotaPolicy:
@@ -137,8 +139,10 @@ async def build_worker(settings: Settings) -> AsyncIterator[Worker]:
             )
         )
         # No SDK-level retries: a failed call goes back to the queue, which owns backoff.
+        # The SDK refuses an empty key at construction; a placeholder lets the worker start
+        # without one, and analyses then fail as "AI unavailable" instead of the process.
         openai_client = AsyncOpenAI(
-            api_key=settings.openai_api_key.get_secret_value(),
+            api_key=settings.openai_api_key.get_secret_value() or "not-configured",
             base_url=settings.openai_base_url,
             timeout=settings.openai_timeout_seconds,
             max_retries=0,
@@ -150,6 +154,7 @@ async def build_worker(settings: Settings) -> AsyncIterator[Worker]:
         uow_factory = unit_of_work_factory(engine)
         clock = SystemClock()
         topology = task_topology(settings)
+        progress = progress_stream(redis, settings)
 
         market = CachedMarketData(
             FinnhubMarketData(
@@ -176,9 +181,10 @@ async def build_worker(settings: Settings) -> AsyncIterator[Worker]:
                 max_news=settings.max_news,
             ),
             market,
-            progress_stream(redis, settings),
+            progress,
             clock,
             lease=timedelta(seconds=settings.analysis_lease_seconds),
+            deadline=timedelta(seconds=settings.analysis_deadline_seconds),
             max_news=settings.max_news,
         )
 
@@ -198,5 +204,11 @@ async def build_worker(settings: Settings) -> AsyncIterator[Worker]:
                 RabbitTaskPublisher(relay_channel, topology),
                 clock,
                 batch_size=settings.outbox_batch_size,
+            ),
+            reaper=ReapStaleAnalyses(
+                uow_factory,
+                progress,
+                clock,
+                stale_after=timedelta(seconds=settings.analysis_stale_after_seconds),
             ),
         )

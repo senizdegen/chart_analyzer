@@ -71,6 +71,7 @@ class SubmitAnalysis:
         analysis_id = uuid4()
         stored = await self._storage.save(analysis_id, image)
 
+        commit_started = False
         try:
             async with self._uow_factory() as uow:
                 await uow.lock_user(user_id)
@@ -93,9 +94,13 @@ class SubmitAnalysis:
                     )
                 )
                 await uow.outbox.add(analysis_id, now=now)
+                commit_started = True
                 await uow.commit()
         except BaseException:
-            await self._storage.delete(stored)
+            # If the commit itself failed its outcome is unknown: the analysis may exist,
+            # and then it needs its image. An orphan file is the cheaper mistake.
+            if not commit_started:
+                await self._storage.delete(stored)
             raise
 
         log.info("analysis.submitted", analysis_id=str(analysis_id), user_id=user_id)

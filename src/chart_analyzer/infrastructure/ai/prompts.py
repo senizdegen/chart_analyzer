@@ -11,6 +11,10 @@ import json
 from chart_analyzer.domain.enums import Language
 from chart_analyzer.domain.models import MarketSnapshot
 
+# Provider text is cut to a fixed size so the cost of a call has an upper bound.
+_MAX_HEADLINE_CHARS = 200
+_MAX_SUMMARY_CHARS = 300
+
 RECOGNITION_SYSTEM_PROMPT = """\
 You inspect one image and report whether it is a price chart and which asset it shows.
 
@@ -115,7 +119,12 @@ def _market_data_json(snapshot: MarketSnapshot) -> str:
         "current_price": snapshot.price.model_dump(mode="json"),
         "analyst_review": review.model_dump(mode="json") if review else None,
         "candidate_news": [
-            article.model_dump(mode="json", include={"id", "headline", "summary", "source"})
+            {
+                "id": article.id,
+                "headline": article.headline[:_MAX_HEADLINE_CHARS],
+                "summary": article.summary[:_MAX_SUMMARY_CHARS],
+                "source": article.source,
+            }
             for article in snapshot.news
         ],
     }

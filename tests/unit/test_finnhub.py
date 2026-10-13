@@ -140,6 +140,17 @@ async def test_unknown_symbol_is_asset_not_found(ref: AssetRef) -> None:
     assert len(api.requests) == 1
 
 
+@pytest.mark.parametrize("price", [-1.5, -0.0001, 0.0, None])
+async def test_quote_without_a_positive_price_is_asset_not_found(price: float | None) -> None:
+    api = Api(QUOTE | {"c": price, "t": QUOTE_TIME})
+
+    with pytest.raises(AnalysisFailure) as failure:
+        await provider(api).get_price(AAPL)
+
+    assert failure.value.code is ErrorCode.ASSET_NOT_FOUND
+    assert len(api.requests) == 1  # a definite answer: not retried
+
+
 async def test_the_token_header_is_sent() -> None:
     api = Api(QUOTE | {"t": QUOTE_TIME})
 

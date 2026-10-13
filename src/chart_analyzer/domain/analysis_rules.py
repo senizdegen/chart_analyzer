@@ -28,7 +28,9 @@ from chart_analyzer.domain.models import (
 )
 
 _SYMBOL_PATTERN = re.compile(r"^[A-Z0-9.\-]{1,12}$")
-_CRYPTO_QUOTE_SUFFIXES = ("USDT", "USDC", "BUSD", "USD", "PERP")
+_CRYPTO_QUOTE_SUFFIXES = ("USDT", "USDC", "BUSD", "USD")
+_PERPETUAL_MARKERS = (".P", "PERP")  # how exchanges label perpetual futures: BTCUSDT.P
+_PRICE_BAND = 5.0  # levels further than 5x from the real price mean a wrong price scale
 
 
 def normalize_symbol(raw: str, asset_type: AssetType) -> str:
@@ -41,6 +43,10 @@ def normalize_symbol(raw: str, asset_type: AssetType) -> str:
     if ":" in symbol:
         symbol = symbol.rsplit(":", 1)[1]
     if asset_type is AssetType.CRYPTO:
+        for marker in _PERPETUAL_MARKERS:
+            if symbol.endswith(marker) and len(symbol) > len(marker):
+                symbol = symbol[: -len(marker)]
+                break
         symbol = re.split(r"[/\-_ ]", symbol, maxsplit=1)[0]
         for suffix in _CRYPTO_QUOTE_SUFFIXES:
             if symbol.endswith(suffix) and len(symbol) > len(suffix):
@@ -132,9 +138,34 @@ def validate_trading_signals(signals: TradingSignals) -> None:
 
 def validate_insights(insights: ChartInsights) -> None:
     """All checks an AI answer must pass before it is shown to a user."""
-    if not insights.summary.strip():
-        raise _invalid("summary is empty")
+    texts = {
+        "summary": insights.summary,
+        "trend explanation": insights.key_insights.trend.explanation,
+        "volatility explanation": insights.key_insights.volatility.explanation,
+        "market sentiment explanation": insights.key_insights.market_sentiment.explanation,
+        "rationale": insights.trading_signals.rationale,
+    }
+    for name, text in texts.items():
+        if not text.strip():
+            raise _invalid(f"{name} is empty")
     validate_trading_signals(insights.trading_signals)
+
+
+def validate_price_scale(signals: TradingSignals, current_price: float) -> None:
+    """Reject levels on a different scale than the real price (cents vs dollars, a wrong
+    asset, a hallucinated axis). The band is wide on purpose: charts can be old."""
+    low, high = current_price / _PRICE_BAND, current_price * _PRICE_BAND
+    for name in (
+        "start_level",
+        "safety_stop",
+        "projected_exit_1",
+        "projected_exit_2",
+        "support_level",
+        "resistance_level",
+    ):
+        value = getattr(signals, name)
+        if not low <= value <= high:
+            raise _invalid(f"{name} {value} is far from the current price {current_price}")
 
 
 def assemble_result(
@@ -151,6 +182,7 @@ def assemble_result(
     articles that really exist in the snapshot - ids it made up are dropped.
     """
     validate_insights(insights)
+    validate_price_scale(insights.trading_signals, snapshot.price.price)
 
     articles = {article.id: article for article in snapshot.news}
     latest_news: list[NewsItem] = []

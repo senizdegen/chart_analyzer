@@ -33,18 +33,56 @@ class TestDecide:
         # 460k spent + one running (20k reserved) leaves room for exactly one more.
         assert POLICY.decide(QuotaUsage(460_000, 0)) is QuotaDecision.ALLOWED
         assert POLICY.decide(QuotaUsage(460_000, 1)) is QuotaDecision.ALLOWED
-        assert POLICY.decide(QuotaUsage(460_000, 2)) is QuotaDecision.DAILY_LIMIT_REACHED
+        assert POLICY.decide(QuotaUsage(460_000, 2)) is not QuotaDecision.ALLOWED
 
     def test_concurrency_cap(self) -> None:
         assert POLICY.decide(QuotaUsage(0, 2)) is QuotaDecision.ALLOWED
         assert POLICY.decide(QuotaUsage(0, 3)) is QuotaDecision.TOO_MANY_ACTIVE
 
-    def test_admitted_analyses_can_never_exceed_the_limit(self) -> None:
-        """Admit greedily; even if every analysis spends its full reservation we stay within."""
-        used = 0
-        while POLICY.decide(QuotaUsage(used, 0)) is QuotaDecision.ALLOWED:
-            used += POLICY.reservation_tokens
-        assert used <= POLICY.daily_limit
+    @pytest.mark.parametrize(
+        ("used", "active"),
+        [
+            (460_000, 2),  # 460k + 2 x 20k reserved: the third reservation does not fit
+            (480_000, 1),  # the last reservation of the day is taken by a running analysis
+            (470_000, 1),
+        ],
+    )
+    def test_blocked_only_by_reservations_of_running_analyses_is_not_the_daily_limit(
+        self, used: int, active: int
+    ) -> None:
+        # The spend alone would still admit one more analysis ...
+        assert POLICY.decide(QuotaUsage(used, 0)) is QuotaDecision.ALLOWED
+        # ... so the user is told to wait for the running ones, not for tomorrow.
+        assert POLICY.decide(QuotaUsage(used, active)) is QuotaDecision.TOO_MANY_ACTIVE
+
+    @pytest.mark.parametrize("active", [0, 1, 2, 3, 10])
+    def test_spent_quota_is_the_daily_limit_whatever_is_running(self, active: int) -> None:
+        # used + one reservation > limit: waiting for running analyses cannot help today
+        assert POLICY.decide(QuotaUsage(480_001, active)) is QuotaDecision.DAILY_LIMIT_REACHED
+        assert POLICY.decide(QuotaUsage(500_000, active)) is QuotaDecision.DAILY_LIMIT_REACHED
+
+    def test_daily_limit_starts_exactly_where_one_reservation_stops_fitting(self) -> None:
+        assert POLICY.decide(QuotaUsage(480_000, 3)) is QuotaDecision.TOO_MANY_ACTIVE
+        assert POLICY.decide(QuotaUsage(480_001, 3)) is QuotaDecision.DAILY_LIMIT_REACHED
+
+    def test_an_allowed_analysis_always_has_a_full_reservation_and_a_free_slot(self) -> None:
+        """Whatever the usage, admission never promises tokens that are already reserved."""
+        policy = QuotaPolicy(daily_limit=100, reservation_tokens=30, max_active_analyses=3)
+        allowed = [
+            (used, active)
+            for used in range(0, 131)
+            for active in range(0, 5)
+            if policy.decide(QuotaUsage(used, active)) is QuotaDecision.ALLOWED
+        ]
+
+        assert allowed  # the sweep does admit something
+        for used, active in allowed:
+            assert used + (active + 1) * 30 <= 100, (used, active)
+            assert active < 3, (used, active)
+        # and it admits everything that fits: nothing is refused without a reason
+        assert len(allowed) == sum(
+            1 for used in range(0, 131) for active in range(0, 3) if used + (active + 1) * 30 <= 100
+        )
 
 
 class TestAccounting:

@@ -18,7 +18,32 @@ from chart_analyzer.infrastructure.market.cached import CachedMarketData
 from tests.fakes import NOW, make_news, make_review, make_snapshot
 
 AAPL = AssetRef(symbol="AAPL", type=AssetType.STOCK, name_hint="Apple")
+AAPL_NO_HINT = AssetRef(symbol="AAPL", type=AssetType.STOCK)
 TTLS = {"price_ttl": 60, "news_ttl": 600, "asset_ttl": 86_400, "analyst_review_ttl": 43_200}
+
+
+class HintEchoingProvider:
+    """Like Finnhub for crypto: the asset name and the news depend on the name hint."""
+
+    def __init__(self) -> None:
+        self.calls: Counter[str] = Counter()
+
+    async def get_asset(self, ref: AssetRef) -> Asset:
+        self.calls["asset"] += 1
+        return Asset(symbol=ref.symbol, name=ref.name_hint or ref.symbol, type=ref.type)
+
+    async def get_price(self, ref: AssetRef) -> CurrentPrice:
+        self.calls["price"] += 1
+        return CurrentPrice(price=100.0 + self.calls["price"], currency="USD", as_of=NOW)
+
+    async def get_analyst_review(self, ref: AssetRef) -> AnalystReview | None:
+        self.calls["analyst_review"] += 1
+        return make_review()
+
+    async def get_news(self, ref: AssetRef) -> list[NewsArticle]:
+        self.calls["news"] += 1
+        article = make_news(1)[0]
+        return [article.model_copy(update={"headline": f"News about {ref.name_hint}"})]
 
 
 class CountingProvider:
@@ -87,10 +112,10 @@ async def test_second_call_of_each_method_is_served_from_the_cache() -> None:
     cached = CachedMarketData(inner, cache, **TTLS)
 
     for _ in range(2):
-        assert await cached.get_asset(AAPL) == snapshot.asset
-        assert await cached.get_price(AAPL) == snapshot.price
-        assert await cached.get_analyst_review(AAPL) == snapshot.analyst_review
-        assert await cached.get_news(AAPL) == snapshot.news
+        assert await cached.get_asset(AAPL_NO_HINT) == snapshot.asset
+        assert await cached.get_price(AAPL_NO_HINT) == snapshot.price
+        assert await cached.get_analyst_review(AAPL_NO_HINT) == snapshot.analyst_review
+        assert await cached.get_news(AAPL_NO_HINT) == snapshot.news
 
     assert inner.calls == {"asset": 1, "price": 1, "analyst_review": 1, "news": 1}
     assert cache.ttls == {
@@ -99,6 +124,89 @@ async def test_second_call_of_each_method_is_served_from_the_cache() -> None:
         "market:analyst_review:stock:AAPL": 43_200,
         "market:news:stock:AAPL": 600,
     }
+
+
+async def test_second_call_with_a_name_hint_is_served_from_the_cache_too() -> None:
+    snapshot = make_snapshot(analyst_review=make_review(), news=make_news(3))
+    inner, cache = CountingProvider(snapshot), DictCache()
+    cached = CachedMarketData(inner, cache, **TTLS)
+
+    for _ in range(2):
+        assert await cached.get_asset(AAPL) == snapshot.asset
+        assert await cached.get_price(AAPL) == snapshot.price
+        assert await cached.get_analyst_review(AAPL) == snapshot.analyst_review
+        assert await cached.get_news(AAPL) == snapshot.news
+
+    assert inner.calls == {"asset": 1, "price": 1, "analyst_review": 1, "news": 1}
+    # the hint is part of the asset and news keys only, and never in clear text
+    by_kind = {key.split(":")[1]: key for key in cache.ttls}
+    assert by_kind["price"] == "market:price:stock:AAPL"
+    assert by_kind["analyst_review"] == "market:analyst_review:stock:AAPL"
+    for kind in ("asset", "news"):
+        prefix, _, digest = by_kind[kind].rpartition(":")
+        assert prefix == f"market:{kind}:stock:AAPL"
+        assert digest and "apple" not in digest.lower()
+    assert {cache.ttls[by_kind[kind]] for kind in ("asset", "news")} == {86_400, 600}
+
+
+async def test_different_name_hints_for_one_symbol_do_not_share_asset_and_news() -> None:
+    inner = HintEchoingProvider()
+    cached = CachedMarketData(inner, DictCache(), **TTLS)
+    luna = AssetRef(symbol="LUNA", type=AssetType.CRYPTO, name_hint="Terra")
+    other = AssetRef(symbol="LUNA", type=AssetType.CRYPTO, name_hint="Luna Classic")
+    unnamed = AssetRef(symbol="LUNA", type=AssetType.CRYPTO)
+
+    for _ in range(2):
+        assert (await cached.get_asset(luna)).name == "Terra"
+        assert (await cached.get_asset(other)).name == "Luna Classic"
+        assert (await cached.get_asset(unnamed)).name == "LUNA"
+        assert (await cached.get_news(luna))[0].headline == "News about Terra"
+        assert (await cached.get_news(other))[0].headline == "News about Luna Classic"
+        assert (await cached.get_news(unnamed))[0].headline == "News about None"
+
+    assert inner.calls == {"asset": 3, "news": 3}
+
+
+async def test_the_same_name_hint_shares_an_entry_ignoring_case_and_spaces() -> None:
+    inner = HintEchoingProvider()
+    cached = CachedMarketData(inner, DictCache(), **TTLS)
+    first = AssetRef(symbol="BTC", type=AssetType.CRYPTO, name_hint="Bitcoin")
+
+    assert (await cached.get_asset(first)).name == "Bitcoin"
+    assert (await cached.get_news(first))[0].headline == "News about Bitcoin"
+    for hint in ("bitcoin", "  BITCOIN ", "Bitcoin\n"):
+        ref = AssetRef(symbol="BTC", type=AssetType.CRYPTO, name_hint=hint)
+        assert (await cached.get_asset(ref)).name == "Bitcoin"
+        assert (await cached.get_news(ref))[0].headline == "News about Bitcoin"
+
+    assert inner.calls == {"asset": 1, "news": 1}
+
+
+async def test_price_and_analyst_review_are_shared_whatever_the_name_hint() -> None:
+    inner = HintEchoingProvider()
+    cached = CachedMarketData(inner, DictCache(), **TTLS)
+    refs = [
+        AssetRef(symbol="BTC", type=AssetType.CRYPTO, name_hint=hint)
+        for hint in ("Bitcoin", "Bitcoin Cash", None, "")
+    ]
+
+    prices = [await cached.get_price(ref) for ref in refs]
+    for ref in refs:
+        await cached.get_analyst_review(ref)
+
+    assert len(set(prices)) == 1
+    assert inner.calls == {"price": 1, "analyst_review": 1}
+
+
+async def test_an_empty_name_hint_is_the_same_as_none() -> None:
+    inner, cache = HintEchoingProvider(), DictCache()
+    cached = CachedMarketData(inner, cache, **TTLS)
+
+    await cached.get_asset(AssetRef(symbol="BTC", type=AssetType.CRYPTO, name_hint=""))
+    await cached.get_asset(AssetRef(symbol="BTC", type=AssetType.CRYPTO))
+
+    assert inner.calls == {"asset": 1}
+    assert list(cache.entries) == ["market:asset:crypto:BTC"]
 
 
 async def test_absent_review_and_empty_news_are_cached_too() -> None:
