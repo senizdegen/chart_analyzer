@@ -37,8 +37,10 @@ class LocalImageStorage:
 
     def _path(self, key: str) -> Path:
         """Keys come back from the database; one that leaves the directory is never followed."""
+        # A backslash separates directories only on Windows; refuse it everywhere so a key
+        # means the same thing on any host.
         path = (self._root / key).resolve()
-        if path.parent != self._root:
+        if "\\" in key or path.parent != self._root:
             raise ValueError(f"image key {key!r} is outside the storage directory")
         return path
 

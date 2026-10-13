@@ -38,6 +38,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen
 COPY tests ./tests
 COPY scripts ./scripts
+# pytest's cache has nowhere to go in a read-only app directory
+ENV PYTEST_ADDOPTS="-p no:cacheprovider"
 USER app
 CMD ["pytest"]
 
